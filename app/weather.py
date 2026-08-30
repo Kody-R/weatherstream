@@ -135,7 +135,7 @@ def fetch_storm_guidance(location: dict[str, Any]) -> dict[str, Any]:
 
 def fetch_nws_forecast(location: dict[str, Any], user_agent: str) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.1.7.1 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     lat = float(location["latitude"])
@@ -176,7 +176,7 @@ def fetch_nws_forecast(location: dict[str, Any], user_agent: str) -> dict[str, A
 
 def fetch_alerts(location: dict[str, Any], user_agent: str) -> list[dict[str, Any]]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.1.7.1 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     point = f"{float(location['latitude']):.4f},{float(location['longitude']):.4f}"
@@ -212,6 +212,12 @@ def fetch_alerts(location: dict[str, Any], user_agent: str) -> list[dict[str, An
 
 
 class WeatherManager:
+    """Refreshes weather for every configured ZIP and preserves cached data on failures.
+
+    v0.1.8.1 keeps per-location NWS forecasts, alerts, storm guidance and freshness
+    metadata so each ZIP can drive its own independent RWN channel.
+    """
+
     def __init__(self, config_store, history_store=None) -> None:
         self.config_store = config_store
         self.history_store = history_store
@@ -220,8 +226,16 @@ class WeatherManager:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._snapshot: dict[str, Any] = {
-            "locations": {}, "alerts": [], "storm_guidance": {}, "last_weather_update": None,
-            "last_alert_update": None, "last_error": None, "sources": {},
+            "locations": {},
+            "alerts": [],
+            "alerts_by_location": {},
+            "storm_guidance": {},
+            "storm_guidance_by_location": {},
+            "location_status": {},
+            "last_weather_update": None,
+            "last_alert_update": None,
+            "last_error": None,
+            "sources": {},
         }
 
     def start(self) -> None:
@@ -241,6 +255,15 @@ class WeatherManager:
         with self._lock:
             return copy.deepcopy(self._snapshot)
 
+    def snapshot_for(self, location_id: str | None) -> dict[str, Any]:
+        """Return a normal renderer snapshot with per-location aliases selected."""
+        snap = self.snapshot()
+        if not location_id:
+            return snap
+        snap["alerts"] = copy.deepcopy((snap.get("alerts_by_location") or {}).get(location_id) or [])
+        snap["storm_guidance"] = copy.deepcopy((snap.get("storm_guidance_by_location") or {}).get(location_id) or {})
+        return snap
+
     def _set_error(self, exc: Exception | None) -> None:
         with self._lock:
             self._snapshot["last_error"] = str(exc) if exc else None
@@ -256,6 +279,23 @@ class WeatherManager:
             else:
                 current["last_error"] = error or "Unknown error"
             self._snapshot.setdefault("sources", {})[name] = current
+
+    def _set_location_status(self, location_id: str, section: str, *, ok: bool, error: str | None = None, cached: bool = False) -> None:
+        stamp = dt.datetime.now(dt.timezone.utc).isoformat()
+        with self._lock:
+            row = copy.deepcopy((self._snapshot.get("location_status") or {}).get(location_id) or {})
+            info = copy.deepcopy(row.get(section) or {})
+            info["last_attempt"] = stamp
+            info["cached"] = bool(cached)
+            if ok:
+                info["last_success"] = stamp
+                info["last_error"] = None
+                info["state"] = "fresh"
+            else:
+                info["last_error"] = error or "Unknown error"
+                info["state"] = "cached" if cached else "unavailable"
+            row[section] = info
+            self._snapshot.setdefault("location_status", {})[location_id] = row
 
     def _run(self) -> None:
         next_weather = 0.0
@@ -295,44 +335,66 @@ class WeatherManager:
         if not locations:
             with self._lock:
                 self._snapshot["locations"] = {}
-                self._snapshot["storm_guidance"] = {}
                 self._snapshot["last_weather_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
             return
 
+        with self._lock:
+            previous_locations = copy.deepcopy(self._snapshot.get("locations") or {})
         new_locations: dict[str, Any] = {}
-        errors = []
-        primary_id = settings.get("primary_location_id")
-        open_meteo_success = False
-        nws_success = False
-        nws_attempted = False
+        errors: list[str] = []
+        open_ok = 0
+        nws_ok = 0
+
         for location in locations:
+            lid = location["id"]
             try:
                 data = fetch_forecast(location)
-                open_meteo_success = True
-                if location.get("id") == primary_id:
-                    nws_attempted = True
-                    try:
-                        data["nws"] = fetch_nws_forecast(location, settings.get("nws_user_agent", ""))
-                        nws_success = True
-                    except Exception as nws_exc:
-                        data["nws"] = {"periods": [], "office": "", "error": str(nws_exc)}
-                        self._mark_source("nws_forecast", False, str(nws_exc))
-                new_locations[location["id"]] = data
-                if location.get("id") == primary_id and self.history_store and (settings.get("history") or {}).get("enabled", True):
-                    try:
-                        self.history_store.record(location["id"], data.get("current") or {})
-                        self.history_store.cleanup(int((settings.get("history") or {}).get("retention_days", 90)))
-                        self._mark_source("weather_history", True)
-                    except Exception as hist_exc:
-                        self._mark_source("weather_history", False, str(hist_exc))
+                open_ok += 1
+                self._set_location_status(lid, "weather", ok=True)
             except Exception as exc:
-                errors.append(f"{location.get('postal_code')}: {exc}")
-                with self._lock:
-                    if location["id"] in self._snapshot["locations"]:
-                        new_locations[location["id"]] = copy.deepcopy(self._snapshot["locations"][location["id"]])
-        self._mark_source("open_meteo", open_meteo_success, None if open_meteo_success else ("; ".join(errors) or "No locations loaded"))
-        if nws_attempted and nws_success:
-            self._mark_source("nws_forecast", True)
+                cached = previous_locations.get(lid)
+                errors.append(f"{location.get('postal_code')}: weather: {exc}")
+                self._set_location_status(lid, "weather", ok=False, error=str(exc), cached=bool(cached))
+                if cached:
+                    data = copy.deepcopy(cached)
+                    data["stale"] = True
+                    data["stale_reason"] = str(exc)
+                else:
+                    continue
+
+            # Every ZIP gets an NWS narrative forecast in v0.1.8.1.
+            try:
+                data["nws"] = fetch_nws_forecast(location, settings.get("nws_user_agent", ""))
+                nws_ok += 1
+                self._set_location_status(lid, "nws_forecast", ok=True)
+            except Exception as exc:
+                previous_nws = (previous_locations.get(lid) or {}).get("nws") or {}
+                if previous_nws.get("periods"):
+                    data["nws"] = copy.deepcopy(previous_nws)
+                    data["nws"]["error"] = str(exc)
+                    data["nws"]["stale"] = True
+                else:
+                    data["nws"] = {"periods": [], "office": "", "error": str(exc)}
+                self._set_location_status(lid, "nws_forecast", ok=False, error=str(exc), cached=bool(previous_nws.get("periods")))
+
+            new_locations[lid] = data
+            if self.history_store and (settings.get("history") or {}).get("enabled", True):
+                try:
+                    # History is recorded for every configured ZIP so every channel has its own graph.
+                    self.history_store.record(lid, data.get("current") or {})
+                    self._set_location_status(lid, "history", ok=True)
+                except Exception as exc:
+                    self._set_location_status(lid, "history", ok=False, error=str(exc))
+
+        if self.history_store and (settings.get("history") or {}).get("enabled", True):
+            try:
+                self.history_store.cleanup(int((settings.get("history") or {}).get("retention_days", 90)))
+                self._mark_source("weather_history", True)
+            except Exception as exc:
+                self._mark_source("weather_history", False, str(exc))
+
+        self._mark_source("open_meteo", open_ok > 0, None if open_ok else ("; ".join(errors) or "No locations loaded"))
+        self._mark_source("nws_forecast", nws_ok > 0, None if nws_ok else "NWS forecast unavailable for all configured ZIPs")
         with self._lock:
             self._snapshot["locations"] = new_locations
             self._snapshot["last_weather_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -340,47 +402,70 @@ class WeatherManager:
                 self._snapshot["last_error"] = "; ".join(errors)
 
     def _refresh_storm_guidance(self, settings: dict[str, Any]) -> None:
-        storm_cfg = settings.get("storm_guidance") or {}
-        if not storm_cfg.get("enabled", True):
-            with self._lock:
-                self._snapshot["storm_guidance"] = {}
-            return
+        cfg = settings.get("storm_guidance") or {}
+        locations = settings.get("locations") or []
         primary_id = settings.get("primary_location_id")
-        location = next((x for x in settings.get("locations", []) if x.get("id") == primary_id), None)
-        if not location:
+        if not cfg.get("enabled", True) or not locations:
             with self._lock:
                 self._snapshot["storm_guidance"] = {}
+                self._snapshot["storm_guidance_by_location"] = {}
             return
-        try:
-            storm = fetch_storm_guidance(location)
-            with self._lock:
-                self._snapshot["storm_guidance"] = storm
-            self._mark_source("storm_guidance", True)
-        except Exception as exc:
-            self._mark_source("storm_guidance", False, str(exc))
-            with self._lock:
-                previous = copy.deepcopy(self._snapshot.get("storm_guidance") or {})
-                if previous:
-                    previous["error"] = str(exc)
-                    self._snapshot["storm_guidance"] = previous
-                else:
-                    self._snapshot["storm_guidance"] = {"hourly": {}, "error": str(exc)}
+
+        with self._lock:
+            previous = copy.deepcopy(self._snapshot.get("storm_guidance_by_location") or {})
+        result: dict[str, Any] = {}
+        errors: list[str] = []
+        successes = 0
+        for location in locations:
+            lid = location["id"]
+            try:
+                storm = fetch_storm_guidance(location)
+                result[lid] = storm
+                successes += 1
+                self._set_location_status(lid, "storm_guidance", ok=True)
+            except Exception as exc:
+                cached = previous.get(lid)
+                errors.append(f"{location.get('postal_code')}: {exc}")
+                if cached:
+                    result[lid] = copy.deepcopy(cached)
+                    result[lid]["error"] = str(exc)
+                    result[lid]["stale"] = True
+                self._set_location_status(lid, "storm_guidance", ok=False, error=str(exc), cached=bool(cached))
+        with self._lock:
+            self._snapshot["storm_guidance_by_location"] = result
+            self._snapshot["storm_guidance"] = copy.deepcopy(result.get(primary_id) or {})
+        self._mark_source("storm_guidance", successes > 0, None if successes else ("; ".join(errors) or "No storm guidance"))
 
     def _refresh_alerts(self, settings: dict[str, Any]) -> None:
+        locations = settings.get("locations") or []
         primary_id = settings.get("primary_location_id")
-        location = next((x for x in settings.get("locations", []) if x["id"] == primary_id), None)
-        if not location:
+        if not locations:
             with self._lock:
                 self._snapshot["alerts"] = []
+                self._snapshot["alerts_by_location"] = {}
                 self._snapshot["last_alert_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
             return
-        try:
-            alerts = fetch_alerts(location, settings.get("nws_user_agent", ""))
-            with self._lock:
-                self._snapshot["alerts"] = alerts
-                self._snapshot["last_alert_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
-            self._mark_source("nws_alerts", True)
-        except Exception as exc:
-            self._mark_source("nws_alerts", False, str(exc))
-            raise
 
+        with self._lock:
+            previous = copy.deepcopy(self._snapshot.get("alerts_by_location") or {})
+        result: dict[str, list[dict[str, Any]]] = {}
+        errors: list[str] = []
+        successes = 0
+        for location in locations:
+            lid = location["id"]
+            try:
+                result[lid] = fetch_alerts(location, settings.get("nws_user_agent", ""))
+                successes += 1
+                self._set_location_status(lid, "alerts", ok=True)
+            except Exception as exc:
+                cached = previous.get(lid)
+                if cached is not None:
+                    result[lid] = copy.deepcopy(cached)
+                errors.append(f"{location.get('postal_code')}: {exc}")
+                self._set_location_status(lid, "alerts", ok=False, error=str(exc), cached=cached is not None)
+
+        with self._lock:
+            self._snapshot["alerts_by_location"] = result
+            self._snapshot["alerts"] = copy.deepcopy(result.get(primary_id) or [])
+            self._snapshot["last_alert_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        self._mark_source("nws_alerts", successes > 0, None if successes else ("; ".join(errors) or "No alert data"))

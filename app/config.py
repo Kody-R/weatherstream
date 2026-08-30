@@ -12,7 +12,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 8,
+    "version": 10,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -26,6 +26,25 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "use_builtin_logo": True,
         "logo_position": "station_id_only",
         "logo_max_width": 260,
+    },
+    "channels": {
+        "per_zip_enabled": True,
+        "radar_enabled": True,
+        "severe_enabled": True,
+        "zip_sequence": [
+            "station_id", "current", "condition_focus", "today", "nws_forecast",
+            "temperature_trend", "hourly", "precipitation", "storm_outlook",
+            "spc_outlook", "seven_day", "weather_history", "almanac"
+        ],
+        "radar_sequence": [
+            "station_id", "radar_local", "radar_regional", "regional_map",
+            "radar_wide", "storm_outlook", "spc_outlook"
+        ],
+        "severe_idle_sequence": [
+            "station_id", "current", "spc_outlook", "storm_outlook",
+            "radar_local", "regional_map", "radar_regional"
+        ],
+        "max_zip_channels": 12,
     },
     "maps": {
         "auto_city_labels": True,
@@ -74,7 +93,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.1.7 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -111,11 +130,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video": {
         "width": 1280,
         "height": 720,
-        "render_fps": 10,
-        "output_fps": 30,
-        "bitrate": "2500k",
-        "hls_segment_seconds": 2,
-        "hls_list_size": 6,
+        "render_fps": 5,
+        "content_fps": 3,
+        "output_fps": 15,
+        "encoder_preset": "superfast",
+        "bitrate": "2000k",
+        "hls_segment_seconds": 3,
+        "hls_list_size": 10,
+        "preview_interval_seconds": 5,
     },
     "presentation": {
         "transition": "crossfade",
@@ -286,7 +308,26 @@ class ConfigStore:
                             seq.insert(idx, item)
                     merged["presentation"]["sequence"] = seq
 
-            merged["version"] = 8
+            if previous_version < 9:
+                # v0.1.8 introduces automatic one-channel-per-ZIP output plus shared Radar/Severe channels.
+                merged["channels"] = _deep_merge(DEFAULT_SETTINGS["channels"], raw.get("channels") or {})
+
+            if previous_version < 10:
+                # v0.1.8.1 is a realtime-performance migration. Preserve explicit custom
+                # video tuning, but move untouched v0.1.8 defaults to the lighter profile.
+                old_video = raw.get("video") if isinstance(raw.get("video"), dict) else {}
+                compatibility_defaults = {
+                    "render_fps": 10, "output_fps": 30, "bitrate": "2500k",
+                    "hls_segment_seconds": 2, "hls_list_size": 6,
+                }
+                for key, old_default in compatibility_defaults.items():
+                    if key not in old_video or old_video.get(key) == old_default:
+                        merged["video"][key] = DEFAULT_SETTINGS["video"][key]
+                for key in ("content_fps", "encoder_preset", "preview_interval_seconds"):
+                    if key not in old_video:
+                        merged["video"][key] = DEFAULT_SETTINGS["video"][key]
+
+            merged["version"] = 10
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -307,18 +348,18 @@ class ConfigStore:
             "public_base_url", "theme", "weather_refresh_seconds",
             "alert_refresh_seconds", "nws_user_agent", "music", "radar",
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
-            "spc", "history", "smart_programming", "dayparts", "cache",
+            "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video",
         }
         with self._lock:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 8
+            self._settings["version"] = 10
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -327,6 +368,22 @@ class ConfigStore:
             self._settings["weather_refresh_seconds"] = max(120, int(self._settings["weather_refresh_seconds"]))
             self._settings["alert_refresh_seconds"] = max(30, int(self._settings["alert_refresh_seconds"]))
             self._settings["music"]["volume"] = _clamp_float(self._settings["music"].get("volume"), 0.0, 1.0, 0.30)
+
+            video = _deep_merge(DEFAULT_SETTINGS["video"], self._settings.get("video") or {})
+            video["width"] = _clamp_int(video.get("width"), 640, 1920, 1280)
+            video["height"] = _clamp_int(video.get("height"), 360, 1080, 720)
+            video["render_fps"] = _clamp_int(video.get("render_fps"), 2, 15, 5)
+            video["content_fps"] = _clamp_int(video.get("content_fps"), 1, video["render_fps"], 3)
+            video["output_fps"] = _clamp_int(video.get("output_fps"), video["render_fps"], 30, 15)
+            video["hls_segment_seconds"] = _clamp_int(video.get("hls_segment_seconds"), 2, 10, 3)
+            video["hls_list_size"] = _clamp_int(video.get("hls_list_size"), 4, 30, 10)
+            video["preview_interval_seconds"] = _clamp_int(video.get("preview_interval_seconds"), 1, 30, 5)
+            if video.get("encoder_preset") not in {"ultrafast", "superfast", "veryfast", "faster", "fast"}:
+                video["encoder_preset"] = "superfast"
+            bitrate = str(video.get("bitrate") or "2000k").strip().lower()
+            if not bitrate.endswith("k") or not bitrate[:-1].isdigit(): bitrate = "2000k"
+            video["bitrate"] = bitrate
+            self._settings["video"] = video
 
             radar = self._settings["radar"]
             radar["frame_count"] = _clamp_int(radar.get("frame_count"), 3, 12, 8)
@@ -412,12 +469,27 @@ class ConfigStore:
             cache["auto_cleanup"] = bool(cache.get("auto_cleanup", True))
             self._settings["cache"] = cache
 
+            channels = _deep_merge(DEFAULT_SETTINGS["channels"], self._settings.get("channels") or {})
+            channels["per_zip_enabled"] = bool(channels.get("per_zip_enabled", True))
+            channels["radar_enabled"] = bool(channels.get("radar_enabled", True))
+            channels["severe_enabled"] = bool(channels.get("severe_enabled", True))
+            channels["max_zip_channels"] = _clamp_int(channels.get("max_zip_channels"), 1, 24, 12)
+            self._settings["channels"] = channels
+
             valid_slides = {
                 "station_id", "current", "today", "nws_forecast", "hourly", "precipitation",
                 "radar", "radar_local", "radar_regional", "radar_wide", "seven_day", "regional", "almanac",
                 "alert", "alert_radar", "temperature_trend", "storm_outlook", "regional_map",
                 "condition_focus", "weather_history", "spc_outlook",
             }
+            channels = self._settings.get("channels") or {}
+            local_valid = valid_slides - {"alert", "alert_radar", "radar", "radar_local", "radar_regional", "radar_wide", "regional_map"}
+            radar_valid = {"station_id", "radar_local", "radar_regional", "radar_wide", "regional_map", "storm_outlook", "spc_outlook", "current", "alert", "alert_radar"}
+            severe_valid = {"station_id", "current", "spc_outlook", "storm_outlook", "radar_local", "radar_regional", "radar_wide", "regional_map", "alert", "alert_radar", "nws_forecast"}
+            channels["zip_sequence"] = [x for x in (channels.get("zip_sequence") or []) if x in local_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["zip_sequence"])
+            channels["radar_sequence"] = [x for x in (channels.get("radar_sequence") or []) if x in radar_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["radar_sequence"])
+            channels["severe_idle_sequence"] = [x for x in (channels.get("severe_idle_sequence") or []) if x in severe_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["severe_idle_sequence"])
+            self._settings["channels"] = channels
             dayparts = self._settings.get("dayparts") or {}
             sequences = dayparts.get("sequences") if isinstance(dayparts.get("sequences"), dict) else {}
             clean_sequences = {}

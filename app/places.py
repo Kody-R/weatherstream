@@ -128,7 +128,7 @@ class PlaceManager:
 
     def _refresh(self) -> None:
         settings = self.config_store.get()
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.1.7.1 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)"
         with httpx.Client(timeout=45.0, follow_redirects=True, headers={"User-Agent": ua}) as client:
             resp = client.get(GEONAMES_CITIES_URL)
             resp.raise_for_status()

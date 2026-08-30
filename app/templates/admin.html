@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.1.7.1 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.1.8.1 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.1.7.1</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.1.8.1</div>
       <h1>Channel Configuration</h1>
     </div>
     <a class="button ghost" href="/">Channel Home</a>
@@ -93,7 +93,7 @@
         <h2>Presentation</h2>
         <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.1.7.1</span>
+      <span class="pill">v0.1.8.1</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -113,7 +113,7 @@
       <label>Transition seconds<input id="transitionSeconds" type="number" min="0" max="2" step="0.05"></label>
       <label class="checkbox"><input id="showStationId" type="checkbox"> Show station ID bumper</label>
       <label class="checkbox"><input id="backgroundMotion" type="checkbox"> Animated theme background</label>
-      <label class="wide">Slide order <span class="hint">v0.1.7.1 slides include condition_focus, weather_history and spc_outlook, plus all existing radar/map slides.</span>
+      <label class="wide">Slide order <span class="hint">v0.1.8.1 slides include condition_focus, weather_history and spc_outlook, plus all existing radar/map slides.</span>
         <input id="slideSequence">
       </label>
       <label>Station ID<input id="durStation" type="number" min="3" max="20"></label>
@@ -181,7 +181,7 @@
     <div class="card-head">
       <div>
         <h2>ZIP Codes</h2>
-        <p>The primary location drives detailed forecasts, NWS alerts, severe-weather takeover, and radar. Other ZIP codes appear on Regional Conditions and radar.</p>
+        <p>Every ZIP code automatically gets its own RWN Local IPTV channel. The primary ZIP additionally centers the shared RWN Radar and RWN Severe Weather channels.</p>
       </div>
       <button class="button ghost" onclick="manualRefresh()">Refresh Weather</button>
     </div>
@@ -192,6 +192,37 @@
     <div id="locations" class="locations"></div>
   </section>
 
+
+  <section class="card">
+    <div class="card-head"><div><h2>RWN Network Channels</h2><p>v0.1.8.1 automatically builds one HLS channel per ZIP plus dedicated Radar and Severe Weather channels. All channels are published in <code>/playlist.m3u</code> and <code>/guide.xml</code>.</p></div><span class="pill">MULTI-CHANNEL</span></div>
+    <div class="form-grid">
+      <label class="checkbox"><input id="perZipChannels" type="checkbox"> One Local channel per ZIP</label>
+      <label class="checkbox"><input id="radarChannelEnabled" type="checkbox"> RWN Radar channel</label>
+      <label class="checkbox"><input id="severeChannelEnabled" type="checkbox"> RWN Severe Weather channel</label>
+      <label>Maximum ZIP channels<input id="maxZipChannels" type="number" min="1" max="24" step="1"></label>
+      <label class="wide">ZIP-channel sequence <span class="hint">Radar is intentionally on the shared RWN Radar channel.</span><input id="zipChannelSequence"></label>
+      <label class="wide">RWN Radar sequence<input id="radarChannelSequence"></label>
+      <label class="wide">RWN Severe idle sequence<input id="severeChannelSequence"></label>
+    </div>
+    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Channel Settings</button><button class="button ghost" onclick="restartStream()">Restart All Channels</button></div>
+    <div class="locations top-gap" id="channelGrid"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><div><h2>Realtime Video Performance</h2><p>v0.1.8.1 uses a lower-cost multi-channel profile and reports whether each HLS producer is actually keeping up with wall-clock time.</p></div><span class="pill">PERFORMANCE</span></div>
+    <div class="form-grid">
+      <label>Pipe FPS <span class="hint">Frames sent to FFmpeg each second.</span><input id="perfRenderFps" type="number" min="2" max="15" step="1"></label>
+      <label>Content FPS <span class="hint">Expensive Pillow redraws per second; repeated frames fill the pipe FPS.</span><input id="perfContentFps" type="number" min="1" max="15" step="1"></label>
+      <label>Output FPS<input id="perfOutputFps" type="number" min="5" max="30" step="1"></label>
+      <label>Encoder preset<select id="perfPreset"><option value="ultrafast">ultrafast</option><option value="superfast">superfast</option><option value="veryfast">veryfast</option><option value="faster">faster</option><option value="fast">fast</option></select></label>
+      <label>Video bitrate <span class="hint">e.g. 2000k</span><input id="perfBitrate" maxlength="12"></label>
+      <label>HLS segment seconds<input id="perfHlsSegment" type="number" min="2" max="10" step="1"></label>
+      <label>HLS playlist segments<input id="perfHlsList" type="number" min="4" max="30" step="1"></label>
+      <label>Preview write interval (sec)<input id="perfPreviewInterval" type="number" min="1" max="30" step="1"></label>
+    </div>
+    <p class="hint top-gap">Recommended multi-channel defaults: 5 pipe FPS, 3 content FPS, 15 output FPS, superfast, 2000k, 3-second HLS segments, 10-segment window. Higher values increase CPU usage.</p>
+    <button class="button" onclick="saveGeneral()">Save Performance Settings</button>
+  </section>
 
   <section class="card">
     <div class="card-head">
@@ -474,6 +505,21 @@ async function loadSettings() {
   seqMorning.value = (dseq.morning || []).join(','); seqDaytime.value = (dseq.daytime || []).join(','); seqEvening.value = (dseq.evening || []).join(','); seqOvernight.value = (dseq.overnight || []).join(',');
   spcEnabled.checked = settings.spc?.enabled !== false; spcRefresh.value = settings.spc?.refresh_seconds ?? 900; spcMinimum.value = settings.spc?.minimum_smart_risk || 'MRGL';
   historyEnabled.checked = settings.history?.enabled !== false; historyRetention.value = settings.history?.retention_days ?? 90; cacheRetention.value = settings.cache?.retention_hours ?? 48;
+  perZipChannels.checked = settings.channels?.per_zip_enabled !== false;
+  radarChannelEnabled.checked = settings.channels?.radar_enabled !== false;
+  severeChannelEnabled.checked = settings.channels?.severe_enabled !== false;
+  maxZipChannels.value = settings.channels?.max_zip_channels ?? 12;
+  zipChannelSequence.value = (settings.channels?.zip_sequence || []).join(',');
+  radarChannelSequence.value = (settings.channels?.radar_sequence || []).join(',');
+  severeChannelSequence.value = (settings.channels?.severe_idle_sequence || []).join(',');
+  perfRenderFps.value = settings.video?.render_fps ?? 5;
+  perfContentFps.value = settings.video?.content_fps ?? 3;
+  perfOutputFps.value = settings.video?.output_fps ?? 15;
+  perfPreset.value = settings.video?.encoder_preset || 'superfast';
+  perfBitrate.value = settings.video?.bitrate || '2000k';
+  perfHlsSegment.value = settings.video?.hls_segment_seconds ?? 3;
+  perfHlsList.value = settings.video?.hls_list_size ?? 10;
+  perfPreviewInterval.value = settings.video?.preview_interval_seconds ?? 5;
   renderLocations();
 }
 musicVolume.addEventListener('input', () => volumeValue.textContent = musicVolume.value + '%');
@@ -488,7 +534,7 @@ function renderLocations() {
     <div class="location-row ${loc.id === settings.primary_location_id ? 'primary' : ''}">
       <div>
         <strong>${loc.name}, ${loc.admin1}</strong>
-        <span>${loc.postal_code} • ${loc.latitude.toFixed(3)}, ${loc.longitude.toFixed(3)}</span>
+        <span>${loc.postal_code} • ${loc.latitude.toFixed(3)}, ${loc.longitude.toFixed(3)}</span><code>/live/zip-${loc.postal_code}/index.m3u8</code>
       </div>
       <div class="row-actions">
         ${loc.id === settings.primary_location_id ? '<span class="pill ok">PRIMARY</span>' : `<button class="button mini ghost" onclick="setPrimary('${loc.id}')">Make Primary</button>`}
@@ -543,6 +589,25 @@ async function saveGeneral() {
     smart_programming: {enabled: smartEnabled.checked, rain_threshold: Number(smartRain.value || 20), storm_threshold: Number(smartStorm.value || 15), heat_threshold: Number(smartHeat.value || 95), cold_threshold: Number(smartCold.value || 32)},
     dayparts: {enabled: daypartsEnabled.checked, morning_start: Number(morningStart.value || 5), daytime_start: Number(daytimeStart.value || 10), evening_start: Number(eveningStart.value || 17), overnight_start: Number(overnightStart.value || 22), sequences: {morning: seqMorning.value.split(',').map(x=>x.trim()).filter(Boolean), daytime: seqDaytime.value.split(',').map(x=>x.trim()).filter(Boolean), evening: seqEvening.value.split(',').map(x=>x.trim()).filter(Boolean), overnight: seqOvernight.value.split(',').map(x=>x.trim()).filter(Boolean)}},
     cache: {retention_hours: Number(cacheRetention.value || 48), auto_cleanup: true},
+    channels: {
+      per_zip_enabled: perZipChannels.checked,
+      radar_enabled: radarChannelEnabled.checked,
+      severe_enabled: severeChannelEnabled.checked,
+      max_zip_channels: Number(maxZipChannels.value || 12),
+      zip_sequence: zipChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
+      radar_sequence: radarChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
+      severe_idle_sequence: severeChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean)
+    },
+    video: {
+      render_fps: Number(perfRenderFps.value || 5),
+      content_fps: Number(perfContentFps.value || 3),
+      output_fps: Number(perfOutputFps.value || 15),
+      encoder_preset: perfPreset.value || 'superfast',
+      bitrate: perfBitrate.value.trim() || '2000k',
+      hls_segment_seconds: Number(perfHlsSegment.value || 3),
+      hls_list_size: Number(perfHlsList.value || 10),
+      preview_interval_seconds: Number(perfPreviewInterval.value || 5)
+    },
     weather_refresh_seconds: Number(weatherRefresh.value || 600),
     alert_refresh_seconds: Number(alertRefresh.value || 60),
     nws_user_agent: nwsUserAgent.value.trim(),
@@ -650,18 +715,21 @@ async function cleanCache() { try { const r=await jfetch('/api/cache/clean',{met
 async function manualRefresh() { try { await jfetch('/api/refresh', {method:'POST'}); notify('Weather refresh requested.'); } catch(e) { notify(e.message, true); } }
 async function restartStream() { try { await jfetch('/api/stream/restart', {method:'POST'}); notify('Video stream restart requested.'); } catch(e) { notify(e.message, true); } }
 
-setInterval(() => { if (Date.now() >= previewHoldUntil) preview.src = '/preview.jpg?t=' + Date.now(); }, 1000);
+setInterval(() => { if (Date.now() >= previewHoldUntil) preview.src = '/preview.jpg?t=' + Date.now(); }, 5000);
 async function refreshStatus() {
   try {
     const s = await jfetch('/api/status');
-    streamState.textContent = s.stream.running ? 'STREAMING' : 'OFFLINE';
+    streamState.textContent = s.stream.running ? `ALL ${s.stream.channel_count||0} CHANNELS ON AIR` : `${s.stream.running_channels||0}/${s.stream.channel_count||0} ON AIR`;
     streamState.className = 'pill ' + (s.stream.running ? 'ok' : 'bad');
     radarState.textContent = s.radar.frames_loaded ? `L ${s.radar.views?.local||0} • R ${s.radar.views?.regional||0} • W ${s.radar.views?.wide||0}` : 'NO RADAR';
     radarState.className = 'pill ' + (s.radar.frames_loaded ? 'ok' : 'bad');
     takeoverState.textContent = s.severe_weather?.takeover_active ? 'TAKEOVER ACTIVE' : 'NORMAL';
     takeoverState.className = 'pill ' + (s.severe_weather?.takeover_active ? 'bad' : 'ok');
     statusGrid.innerHTML = `
-      <div><span>Configured</span><strong>${s.configured_locations}</strong></div>
+      <div><span>Configured ZIPs</span><strong>${s.configured_locations}</strong></div>
+      <div><span>RWN Channels</span><strong>${s.stream.channel_count||0}</strong></div>
+      <div><span>HLS Ready</span><strong>${s.stream.ready_channels||0}/${s.stream.channel_count||0}</strong></div>
+      <div><span>Realtime</span><strong>${s.stream.realtime_channels||0}/${s.stream.channel_count||0}</strong></div>
       <div><span>Loaded</span><strong>${s.weather.locations_loaded}</strong></div>
       <div><span>Alerts</span><strong>${s.weather.active_alerts}</strong></div>
       <div><span>Alert Audio</span><strong>${s.stream.alert_audio || 'unknown'}</strong></div>
@@ -676,6 +744,14 @@ async function refreshStatus() {
       <div><span>History Rows</span><strong>${s.history?.rows || 0}</strong></div>
       <div><span>Cache</span><strong>${Math.round((s.cache?.size_bytes||0)/1048576)} MB</strong></div>
       <div><span>HLS</span><strong>${s.stream.playlist_ready ? 'Ready' : 'Starting'}</strong></div>`;
+    const channels = s.stream?.channels || {};
+    channelGrid.innerHTML = Object.values(channels).map(ch => {
+      const rs = ch.realtime_state || 'WARMING UP';
+      const ratio = ch.realtime_ratio == null ? '--' : `${Math.round(ch.realtime_ratio*100)}%`;
+      const age = ch.playlist_age_seconds == null ? '--' : `${ch.playlist_age_seconds.toFixed(1)}s`;
+      const stateClass = rs === 'REALTIME' ? 'ok' : (rs === 'WARMING UP' ? '' : 'bad');
+      return `<div class="location-row"><div><strong>${ch.key}</strong><span>${(ch.mode||'').toUpperCase()} • ${ch.path||''}</span><small>${ch.producer?.content_fps||'--'} content FPS → ${ch.producer?.render_fps||'--'} pipe FPS → ${ch.producer?.output_fps||'--'} output FPS • playlist age ${age}</small></div><div class="row-actions"><span class="pill ${ch.running?'ok':'bad'}">${ch.running?'ON AIR':'STARTING'}</span><span class="pill ${ch.playlist_ready?'ok':''}">${ch.playlist_ready?'HLS READY':'WAITING'}</span><span class="pill ${stateClass}">${rs} ${ratio}</span></div></div>`;
+    }).join('') || '<div class="empty">No channels yet. Add a ZIP code above.</div>';
     const sources = s.sources || {};
     sourceGrid.innerHTML = Object.entries(sources).map(([name,info]) => {
       const ok = !info?.last_error && !!info?.last_success;

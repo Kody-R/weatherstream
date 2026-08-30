@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+from functools import lru_cache
 import textwrap
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -43,6 +44,7 @@ THEMES = {
 }
 
 
+@lru_cache(maxsize=96)
 def font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.FreeTypeFont:
     path = FONT_MONO_BOLD if mono and bold else FONT_MONO if mono else FONT_BOLD if bold else FONT_REG
     try:
@@ -271,7 +273,7 @@ class WeatherRenderer:
         rain = self._max_next(hourly, "precipitation_probability", 12)
         storm_hourly = ((snapshot.get("storm_guidance") or {}).get("hourly") or {})
         storm = self._max_next(storm_hourly, "thunderstorm_probability", 12)
-        spc = self.spc_manager.snapshot().get("outlook", {}) if self.spc_manager else {}
+        spc = self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook", {}) if self.spc_manager else {}
         rank = int(((spc.get("day1") or {}).get("rank")) or 0)
         min_risk = {"TSTM":1,"MRGL":2,"SLGT":3,"ENH":4,"MDT":5,"HIGH":6}.get((settings.get("spc") or {}).get("minimum_smart_risk", "MRGL"), 2)
         if rain < int(smart.get("rain_threshold", 20)):
@@ -425,10 +427,57 @@ class WeatherRenderer:
         self._draw_footer(ImageDraw.Draw(img), w, h, settings, snapshot, c, now)
         return img
 
-    def render(self, now: float | None = None) -> Image.Image:
-        now = now or dt.datetime.now().timestamp()
+    def _channel_context(self, location_id: str | None = None, channel_mode: str = "local") -> tuple[dict[str, Any], dict[str, Any]]:
+        # ConfigStore.get() already returns an isolated deep copy; avoid copying it a second time on every video frame.
         settings = self.config_store.get()
-        snapshot = self.weather_manager.snapshot()
+        if location_id:
+            settings["primary_location_id"] = location_id
+            settings["_render_location_id"] = location_id
+            if hasattr(self.weather_manager, "snapshot_for"):
+                snapshot = self.weather_manager.snapshot_for(location_id)
+            else:
+                snapshot = self.weather_manager.snapshot()
+        else:
+            snapshot = self.weather_manager.snapshot()
+            settings["_render_location_id"] = settings.get("primary_location_id")
+
+        channels = settings.get("channels") or {}
+        if channel_mode == "local":
+            # Per-ZIP local channels intentionally leave shared radar/map products to
+            # the dedicated RWN Radar channel. Forecast/history/SPC data are ZIP-local.
+            zip_seq = list(channels.get("zip_sequence") or [])
+            if zip_seq:
+                settings.setdefault("presentation", {})["sequence"] = zip_seq
+            allowed = set(zip_seq) if zip_seq else None
+            if allowed and isinstance((settings.get("dayparts") or {}).get("sequences"), dict):
+                for part, seq in settings["dayparts"]["sequences"].items():
+                    filtered = [x for x in seq if x in allowed]
+                    settings["dayparts"]["sequences"][part] = filtered or zip_seq
+            loc = next((x for x in settings.get("locations", []) if x.get("id") == settings.get("primary_location_id")), None)
+            if loc:
+                settings["station_slogan"] = f"LOCAL WEATHER • {loc.get('postal_code','')} • RADAR ON RWN RADAR"
+        elif channel_mode == "radar":
+            settings.setdefault("presentation", {}).setdefault("scheduled_updates", {})["enabled"] = False
+            settings.setdefault("dayparts", {})["enabled"] = False
+            settings.setdefault("smart_programming", {})["enabled"] = False
+            settings["presentation"]["sequence"] = list(channels.get("radar_sequence") or ["station_id","radar_local","radar_regional","regional_map","radar_wide"])
+            settings["station_slogan"] = "RWN RADAR • LOCAL • REGIONAL • WIDE AREA"
+        elif channel_mode == "severe":
+            settings.setdefault("presentation", {}).setdefault("scheduled_updates", {})["enabled"] = False
+            settings.setdefault("dayparts", {})["enabled"] = False
+            settings.setdefault("smart_programming", {})["enabled"] = False
+            settings["presentation"]["sequence"] = list(channels.get("severe_idle_sequence") or ["station_id","current","spc_outlook","storm_outlook","radar_local","regional_map","radar_regional"])
+            settings["station_slogan"] = "RWN SEVERE WEATHER CENTER • ALERTS • RADAR"
+        settings["_channel_mode"] = channel_mode
+        return settings, snapshot
+
+    def takeover_alert_for(self, location_id: str | None = None) -> dict[str, Any] | None:
+        settings, snapshot = self._channel_context(location_id, "local")
+        return self._takeover_alert(settings, snapshot)
+
+    def render_channel(self, now: float | None = None, location_id: str | None = None, channel_mode: str = "local") -> Image.Image:
+        now = now or dt.datetime.now().timestamp()
+        settings, snapshot = self._channel_context(location_id, channel_mode)
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720))
         c = self._theme(settings)
         primary = self._primary(settings, snapshot)
@@ -456,8 +505,11 @@ class WeatherRenderer:
                 out = self._transition(current, nxt, alpha, kind)
         return self._apply_retro_effects(out, settings, now)
 
-    def render_preview(self, slide_name: str, test_alert: bool = False) -> Image.Image:
-        settings = self.config_store.get(); snapshot = self.weather_manager.snapshot(); primary = self._primary(settings, snapshot)
+    def render(self, now: float | None = None) -> Image.Image:
+        return self.render_channel(now=now, location_id=None, channel_mode="local")
+
+    def render_preview(self, slide_name: str, test_alert: bool = False, location_id: str | None = None, channel_mode: str = "local") -> Image.Image:
+        settings, snapshot = self._channel_context(location_id, channel_mode); primary = self._primary(settings, snapshot)
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720)); c = self._theme(settings)
         if not primary:
             out = Image.new("RGB", (w,h), c["bg"]); self._paint_background(out,c,settings,dt.datetime.now().timestamp()); d=ImageDraw.Draw(out); self._draw_setup(d,w,h,settings,c); self._draw_footer(d,w,h,settings,snapshot,c,dt.datetime.now().timestamp()); return out
@@ -1099,7 +1151,7 @@ class WeatherRenderer:
 
     def _draw_spc_outlook(self, draw, w, h, settings, p, c):
         self._header(draw,w,"SPC SEVERE WEATHER OUTLOOK",location_label(p.get("location") or {}),c)
-        outlook=self.spc_manager.snapshot().get("outlook",{}) if self.spc_manager else {}
+        outlook=self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook",{}) if self.spc_manager else {}
         risk_colors={"NONE":"#6d7b85","TSTM":"#4ca65b","MRGL":"#4e9e64","SLGT":"#d4c83a","ENH":"#e18a31","MDT":"#c94c58","HIGH":"#c05aa5"}
         if not outlook:
             draw.text((w//2,320),"SPC OUTLOOK UNAVAILABLE",font=font(38,bold=True),fill=c["accent"],anchor="mm"); draw.text((w//2,370),"WeatherStream will retry the NOAA outlook service automatically.",font=font(20),fill=c["text"],anchor="mm"); return
@@ -1422,7 +1474,7 @@ class WeatherRenderer:
             parts.append(f"CURRENT  {loc.get('name','LOCAL')} {n(cur.get('temperature_2m'),0,'°')}  {cur.get('description','')}")
             precip=self._max_next(hourly,"precipitation_probability",12)
             if precip >= int((settings.get("smart_programming") or {}).get("rain_threshold",20)): parts.append(f"RAIN CHANCE  UP TO {precip:.0f}% NEXT 12 HOURS")
-            spc=self.spc_manager.snapshot().get("outlook",{}) if self.spc_manager else {}; day1=spc.get("day1") or {}
+            spc=self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook",{}) if self.spc_manager else {}; day1=spc.get("day1") or {}
             if int(day1.get("rank") or 0)>=2: parts.append(f"SPC OUTLOOK  {day1.get('name','').upper()}")
             highs=daily.get("temperature_2m_max") or []; lows=daily.get("temperature_2m_min") or []
             if highs and lows: parts.append(f"TODAY  HIGH {n(highs[0],0,'°')}  LOW {n(lows[0],0,'°')}")
@@ -1431,7 +1483,7 @@ class WeatherRenderer:
                 if hist.get("pressure_trend") and hist.get("pressure_trend")!="STEADY": parts.append(f"PRESSURE {hist.get('pressure_trend')}")
         else: parts.append("SETUP  OPEN THE ADMIN PAGE AND ADD A U.S. ZIP CODE")
         if alerts: parts.append(f"ALERT  {alerts[0].get('event','WEATHER ALERT').upper()}")
-        else: parts.append("ALERTS  NO ACTIVE NWS ALERTS FOR PRIMARY LOCATION")
+        else: parts.append("ALERTS  NO ACTIVE NWS ALERTS FOR THIS CHANNEL")
         return "     •     ".join(parts)+"     •     "
 
     def _draw_footer(self, draw, w, h, settings, snapshot, c, now):
@@ -1474,4 +1526,9 @@ class WeatherRenderer:
         if self.scheduled_update_active(settings, snapshot, now) and not self._is_takeover_active(settings, snapshot):
             draw.rectangle((bug_w-70, ticker_top+4, bug_w-5, ticker_top+20), fill=c["accent"])
             draw.text((bug_w-37, ticker_top+12), "LOCAL", font=font(9, bold=True, mono=True), fill=c["panel2"], anchor="mm")
+        lid = settings.get("_render_location_id") or settings.get("primary_location_id")
+        weather_state = ((((snapshot.get("location_status") or {}).get(lid) or {}).get("weather") or {}).get("state"))
+        if weather_state == "cached":
+            draw.rectangle((5, ticker_top+4, 78, ticker_top+20), fill="#b36b18")
+            draw.text((41, ticker_top+12), "CACHED", font=font(9, bold=True, mono=True), fill="#ffffff", anchor="mm")
 

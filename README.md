@@ -1,290 +1,215 @@
-# WeatherStream v0.1.7.1 — Roller Weather Network
+# WeatherStream v0.1.8.1 — RWN Realtime Performance Patch
 
-WeatherStream is a self-hosted Docker application that generates a continuous retro cable-style local weather television channel. v0.1.7.1 turns the renderer into **Roller Weather Network (RWN)** and adds a broadcast-intelligence layer on top of the radar, severe-weather, mapping, and presentation systems built in earlier releases.
+WeatherStream generates the **Roller Weather Network (RWN)** as local HLS/IPTV channels for Jellyfin, VLC, Tunarr, and other clients.
 
+**v0.1.8.1 is a focused performance/reliability patch for the v0.1.8 multi-channel architecture.** It retains one Local channel per configured ZIP plus shared RWN Radar and RWN Severe channels, while substantially reducing the amount of Python/Pillow rendering and H.264 encoding work required to keep those channels running in realtime.
 
-## v0.1.7.1 hourly night-icon patch
+## Why v0.1.8.1 exists
 
-- Hourly forecast cards now use a crescent-moon icon for clear/mainly-clear conditions after local sunset and before local sunrise.
-- Partly-cloudy nighttime cards combine the moon with the existing cloud layer.
-- The day/night decision is calculated from **each forecast hour's date** and that date's Open-Meteo sunrise/sunset values, so hours after midnight are handled correctly.
-- Daytime hourly cards continue to use the sun icon.
-- No settings migration is required; the settings schema remains version 8.
-- The v0.1.6.1 WMO weather-code-0 fix remains included.
+A real-world v0.1.8 test with two ZIP channels plus Radar and Severe showed:
 
-> **Important v0.1.6.1 fix carried forward:** WMO weather code `0` is correctly interpreted as **Clear**. Earlier code used a falsey-value fallback that could turn a valid clear-sky code into `Weather Unavailable`. v0.1.7.1 preserves the corrected `None` check.
+- 4 simultaneous HLS encoders
+- roughly 327% total container CPU
+- roughly 182% CPU in the Python/Uvicorn process
+- only 3 two-second HLS segments produced during 20 seconds of wall-clock time
+- effective production speed of about **0.30x realtime**
 
-## Headline features in v0.1.7.1
+That caused VLC to repeatedly catch the live edge and buffer while waiting for the producer.
 
-### 1. Intelligent programming / Broadcast Director
+The main problem was not network bandwidth. v0.1.8 did too much work per channel: Python rendered full 1280x720 Pillow frames at 10 FPS, FFmpeg converted each channel to 30 FPS, previews were JPEG-encoded once per second, and the alert-audio thread repeatedly rebuilt settings/weather snapshots while feeding silence.
 
-Normal programming can now adapt to current conditions rather than blindly showing every slide.
+## New optimized defaults
+
+v0.1.8.1 changes the default video profile to:
+
+| Setting | v0.1.8 | v0.1.8.1 |
+|---|---:|---:|
+| Pillow/pipe FPS | 10 | **5** |
+| Expensive content redraw FPS | 10 | **3** |
+| HLS output FPS | 30 | **15** |
+| x264 preset | veryfast | **superfast** |
+| Video bitrate | 2500k | **2000k** |
+| HLS segment length | 2 sec | **3 sec** |
+| HLS playlist size | 6 | **10** |
+| Approx. HLS window | 12 sec | **30 sec** |
+| Preview JPEG write | 1 sec | **5 sec** |
+
+These values are intended for a mostly-static 720p weather-information channel. Radar loops, tickers, fades, and wipes remain animated while avoiding unnecessary 30 FPS encoding load.
+
+## Frame reuse / content throttling
+
+The encoder pipe still receives frames at `render_fps`, but WeatherStream only performs a complete expensive Pillow render at `content_fps`.
 
 Default behavior:
 
-- Rain Chances is suppressed when the next-hours precipitation probability is below the configured threshold.
-- Storm Potential is suppressed when model thunderstorm probability is below the configured threshold.
-- SPC Outlook is inserted only when the local categorical risk meets the configured threshold.
-- Weather History is omitted when history recording is disabled.
-- Severe Weather Takeover remains the highest-priority mode.
-- Scheduled Local Weather Updates remain higher priority than ordinary daypart/smart programming.
-
-Admin controls:
-
-- Enable/disable Smart Programming
-- Rain threshold
-- Storm threshold
-- Heat-focus threshold
-- Cold-focus threshold
-
-### 2. Daypart programming
-
-RWN can use different slide rotations during:
-
-- Morning
-- Daytime
-- Evening
-- Overnight
-
-The start hour and exact sequence for every daypart are configurable from Admin.
-
-Default examples:
-
-**Morning:** Current → Condition Focus → Today → Temperature Trend → Hourly → Local Radar → Regional Map → 7-Day → History → Almanac
-
-**Daytime:** Current → Condition Focus → Today → Temperature Trend → Hourly → Rain Chances → Storm Potential → SPC Outlook → Local Radar → NWS Forecast → Regional Map → 7-Day → History
-
-**Evening/Overnight:** emphasizes tonight/tomorrow, radar, extended forecast, history, and almanac information.
-
-### 3. 24-hour local weather history
-
-WeatherStream now keeps a small SQLite history database at:
-
 ```text
-/config/weatherstream.db
+Pillow render:      3 FPS
+        ↓
+Cached RGB frame bytes
+        ↓
+FFmpeg input pipe:  5 FPS
+        ↓
+FFmpeg output:     15 FPS
+        ↓
+HLS
 ```
 
-On each successful weather refresh for the primary ZIP, it records:
+Between content redraws, the already-rendered RGB bytes are reused. This avoids repeatedly rebuilding the same forecast cards, icons, graph layouts, maps, fonts, and branding simply to give FFmpeg another copy of a mostly-static frame.
 
-- temperature
-- apparent temperature
-- humidity
-- surface pressure
-- wind speed
-- wind gust
-- precipitation
-- cloud cover
-- WMO weather code
+## Additional CPU fixes
 
-The new `weather_history` slide displays:
+### Font cache
 
-- 24-hour temperature graph
-- local high / low
-- maximum wind gust
-- accumulated sampled precipitation
-- pressure trend
-- number of stored observations
+Pillow `ImageFont.truetype()` objects are now cached instead of repeatedly opening/rebuilding the same font sizes during every frame.
 
-History retention is configurable from Admin. Default: 90 days.
+### Removed duplicate settings deepcopy
 
-### 4. Smart condition-focus screen
+`ConfigStore.get()` already returns an isolated deep copy. The renderer previously deep-copied that result a second time for every frame. v0.1.8.1 removes that redundant copy.
 
-The new `condition_focus` slide automatically emphasizes the most relevant local metric:
+### Alert-audio polling optimization
 
-- Heat Index during hot/humid weather
-- Wind Chill during cold/windy weather
-- Wind Gusts during windy conditions
-- Dew Point during very humid weather
-- Apparent / Feels Like temperature otherwise
+The live PCM alert pipe still stays continuously fed, but WeatherStream no longer performs configuration and severe-alert snapshot work roughly 20 times per second per channel.
 
-The slide also shows humidity, dew point, and wind context.
+Alert state is checked about once per second, while the audio pipe continues feeding silence/chime data independently. This preserves timely alert chimes without wasting CPU on repeated weather/config cloning.
 
-### 5. NOAA/NWS Storm Prediction Center outlooks
+### FFmpeg stderr draining
 
-The new `spc_outlook` slide queries the official NOAA/NWS SPC outlook map service for the primary location and shows the highest categorical risk intersecting that point for:
+Each encoder now continuously drains FFmpeg stderr into a small bounded in-memory tail. This prevents a noisy FFmpeg process from eventually blocking because its stderr pipe filled.
 
-- Day 1
-- Day 2
-- Day 3
+## Realtime HLS telemetry
 
-Categories include:
+v0.1.8 reported `running=true` and `playlist_ready=true`, but that did not prove the stream was actually keeping up with wall-clock time.
+
+v0.1.8.1 tracks each channel's HLS segment production rate and exposes:
+
+- latest HLS segment
+- media sequence
+- playlist age
+- realtime ratio
+- realtime state
+- configured content / pipe / output FPS
+- frames rendered
+- frames sent to FFmpeg
+- late-frame count
+- average Pillow render time
+
+Possible states are:
 
 ```text
-NONE
-TSTM
-MRGL
-SLGT
-ENH
-MDT
-HIGH
+WARMING UP
+REALTIME
+DEGRADED
+FALLING BEHIND
+STALLED
 ```
 
-WeatherStream treats this as forecast guidance. It never replaces NWS watches/warnings, and actual qualifying NWS alerts still trigger Severe Weather Takeover.
+The Admin page shows this next to every Local/Radar/Severe encoder.
 
-SPC refresh and the minimum risk required for Smart Programming are configurable.
-
-### 6. Roller Weather Network branding
-
-Fresh installations now default to:
+Example:
 
 ```text
-Network:  Roller Weather Network
-Bug:      RWN
-Slogan:   Local Weather • Radar • Alerts • 24 Hours
+zip-71270
+LOCAL • /live/zip-71270/index.m3u8
+3 content FPS → 5 pipe FPS → 15 output FPS
+playlist age 1.2s
+
+ON AIR   HLS READY   REALTIME 100%
 ```
 
-A built-in transparent RWN logo is included in the image. If `/config/branding/logo.png` does not exist and **Use built-in RWN logo** is enabled, the bundled logo is used automatically.
+## Performance settings in Admin
 
-You can still upload your own PNG/JPEG/WebP logo from Admin. Removing a custom logo returns the station to the built-in RWN logo.
+`/admin` now includes **Realtime Video Performance** controls for:
 
-The Docker/software project remains named **WeatherStream** while the on-air network identity is **Roller Weather Network**.
+- Pipe FPS
+- Content FPS
+- Output FPS
+- x264 preset
+- Video bitrate
+- HLS segment duration
+- HLS playlist size
+- Preview write interval
 
-### 7. Jellyfin XMLTV guide
-
-v0.1.7.1 adds:
+Recommended starting profile:
 
 ```text
-http://SERVER:8787/guide.xml
+Pipe FPS:                 5
+Content FPS:              3
+Output FPS:              15
+Encoder preset:   superfast
+Bitrate:              2000k
+HLS segment:              3 sec
+HLS list:                10
+Preview interval:         5 sec
 ```
 
-The M3U channel and XMLTV channel both use:
+Higher FPS/preset-quality values increase CPU use. If a very low-power server still falls behind, try `content_fps=2`, `render_fps=4`, or `encoder_preset=ultrafast` before reducing resolution.
+
+## Multi-channel behavior retained
+
+Every configured ZIP can still have its own complete Local channel:
 
 ```text
-rwn.local
+RWN Local - Ruston
+RWN Local - Pineville
+RWN Local - Monroe
+...
 ```
 
-Endpoints:
+plus:
 
 ```text
-M3U:    http://SERVER:8787/playlist.m3u
-XMLTV:  http://SERVER:8787/guide.xml
-HLS:    http://SERVER:8787/live/weather.m3u8
+RWN Radar
+RWN Severe Weather
 ```
 
-The XMLTV schedule reflects the RWN daypart identity and configured scheduled Local Weather Update windows. If Severe Weather Takeover is currently active when the guide is generated, the current affected guide block is labeled **RWN Severe Weather Coverage**.
-
-For Jellyfin, add `/playlist.m3u` as the M3U tuner and `/guide.xml` as the XMLTV guide source.
-
-### 8. Data-source diagnostics
-
-Admin now has a Data Source Diagnostics section. `/api/status` exposes health information for the main upstream/local systems, including:
-
-- Open-Meteo weather
-- NWS forecast
-- NWS alerts
-- model storm guidance
-- RainViewer radar
-- GeoNames city database
-- SPC outlooks
-- local weather-history database
-
-The status page reports recent success/error information so a failed upstream source can be distinguished from a renderer or Docker problem.
-
-### 9. Admin preview/test console
-
-You can preview individual graphics without changing the live IPTV stream:
-
-- Station ID
-- Current Conditions
-- Condition Focus
-- 24-Hour History
-- SPC Outlook
-- Local Radar
-
-You can also render synthetic:
-
-- TEST Warning
-- TEST Warning Radar
-
-Synthetic alert previews are visibly marked:
+Examples:
 
 ```text
-TEST MODE • NOT A REAL WEATHER ALERT
+/live/zip-71270/index.m3u8
+/live/zip-71360/index.m3u8
+/live/radar/index.m3u8
+/live/severe/index.m3u8
 ```
 
-They never modify the live NWS alert feed or trigger the live warning chime.
-
-### 10. Smarter ticker priorities
-
-The lower ticker still uses the clipped surface introduced in v0.1.4, so it cannot overlap the bottom-left station/time bug.
-
-Normal ticker content can now prioritize useful context such as:
-
-- current conditions
-- meaningful rain chances
-- SPC categorical risk
-- today's high/low
-- pressure trend from local history
-- NWS alerts
-
-Severe-alert ticker takeover remains highest priority.
-
-### 11. Cache management
-
-WeatherStream now includes a cache manager for `/config/cache`.
-
-Default retention:
+All channels continue to be generated automatically in:
 
 ```text
-48 hours
+/playlist.m3u
+/guide.xml
 ```
 
-Automatic cleanup runs at startup and approximately every six hours. Admin also includes **Clean Cache Now**.
+## Previous fixes retained
 
-The SQLite weather-history database is not part of the transient cache and uses its own retention setting.
+v0.1.8.1 includes all v0.1.8/v0.1.7.1 fixes, including:
 
----
-
-## Existing features retained
-
-v0.1.7.1 preserves the prior WeatherStream feature set, including:
-
-- multiple U.S. ZIP codes
-- selectable primary ZIP
-- Open-Meteo current/hourly/7-day weather
-- NWS textual forecasts
-- NWS active alerts
+- WMO weather code `0` correctly displays as **Clear**
+- hourly forecast uses nighttime moon/cloud icons after local sunset and before sunrise
+- one Local channel per ZIP
+- ZIP-local NWS forecasts, alerts, SPC outlooks, storm guidance, and weather history
+- RWN Radar and RWN Severe channels
+- NWS warning polygons
 - Severe Weather Takeover
-- NWS warning polygons on radar
-- alert ticker takeover
-- locally generated alert chime mixed into HLS audio
-- Local / Regional / Wide radar
-- RainViewer animated radar loops
-- OpenStreetMap basemap
-- U.S. Census TIGERweb county/state boundaries
-- radar city labels and GeoNames nearby-city labels
-- radar range rings
-- optional classic radar sweep
-- Regional Weather Map
-- Temperature Trend
-- Rain Chances
-- Storm Potential model guidance
-- 7-Day Forecast
-- Regional Conditions
-- Almanac
-- five presentation themes
-- analog/CRT effects
-- animated transitions
-- scheduled Local Weather Updates
-- station branding/logo upload
-- background music
-- H.264/AAC HLS output
-- Jellyfin-ready M3U
-- CasaOS / Docker Compose deployment
-- GHCR amd64 + arm64 GitHub Actions workflow
+- alert chime audio
+- Roller Weather Network branding
+- smart programming and dayparts
+- SQLite weather history
+- Jellyfin XMLTV
+- radar/map/city overlays
+- clipped ticker that disappears behind the lower-left station/time bug
 
----
+## Settings migration
 
-## Install / local Docker build
+v0.1.8.1 advances the settings schema from **9 to 10**.
 
-```bash
-unzip weatherstream-v0.1.7.1.zip
-cd weatherstream-v0.1.7.1
+Your ZIPs, themes, RWN branding, radar settings, channel lineup, weather history, music, and other configuration remain intact.
 
-docker compose up -d --build
-```
+If your saved `video` settings still match the original v0.1.8 defaults, migration automatically switches them to the optimized v0.1.8.1 profile.
 
-For a clean dependency/image rebuild:
+If you had explicitly customized a video value, WeatherStream preserves that value where possible while adding the new `content_fps`, `encoder_preset`, and `preview_interval_seconds` settings.
+
+## Docker / CasaOS
+
+Build locally:
 
 ```bash
 docker compose down
@@ -292,135 +217,76 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-Open:
-
-```text
-http://SERVER-IP:8787/admin
-```
-
-Watch logs:
+Watch startup:
 
 ```bash
 docker logs -f weatherstream
 ```
 
-Status API:
+Admin:
+
+```text
+http://SERVER-IP:8787/admin
+```
+
+Channel discovery:
+
+```text
+http://SERVER-IP:8787/api/channels
+```
+
+Status / realtime diagnostics:
 
 ```text
 http://SERVER-IP:8787/api/status
 ```
 
----
-
-## CasaOS
-
-The included Compose file uses:
-
-```yaml
-ports:
-  - "8787:8787"
-
-volumes:
-  - ./config:/config
-  - ./music:/music:ro
-```
-
-For a CasaOS server you can map persistent host paths such as:
+Jellyfin:
 
 ```text
-/DATA/AppData/weatherstream  -> /config
-/DATA/Media/WeatherMusic     -> /music
+M3U:    http://SERVER-IP:8787/playlist.m3u
+XMLTV:  http://SERVER-IP:8787/guide.xml
 ```
 
-The `/config` volume contains settings, cached map/radar data, custom branding, and `weatherstream.db`.
+## Realtime verification test
 
----
+v0.1.8.1 defaults use 3-second HLS segments. After the playlist has been running long enough to fill its 10-segment window, a 20-second test should advance the media sequence about **6–7 segments**.
 
-## GHCR
+Example PowerShell test:
 
-The included workflow builds both:
+```powershell
+docker exec weatherstream sh -c "echo BEFORE; grep -E 'TARGETDURATION|MEDIA-SEQUENCE' /tmp/weatherstream/live/zip-71270/index.m3u8; sleep 20; echo AFTER; grep -E 'TARGETDURATION|MEDIA-SEQUENCE' /tmp/weatherstream/live/zip-71270/index.m3u8"
+```
+
+Healthy example:
 
 ```text
-linux/amd64
-linux/arm64
+BEFORE
+#EXT-X-TARGETDURATION:3
+#EXT-X-MEDIA-SEQUENCE:100
+
+AFTER
+#EXT-X-TARGETDURATION:3
+#EXT-X-MEDIA-SEQUENCE:106
 ```
 
-and publishes on `main` and version tags.
+Use `/api/status` for the easier ongoing view; each encoder should settle on `REALTIME` close to 100%.
 
-Example image after publishing:
+## Validation performed
 
-```text
-ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.1.7.1
-```
+The release was checked for:
 
-Typical release flow:
+- Python syntax across the application
+- Admin JavaScript syntax
+- v0.1.8 → v0.1.8.1 schema migration
+- preserved custom video settings
+- FastAPI application import
+- four simultaneous FFmpeg workers
+- separate Local / Local / Radar / Severe HLS playlists
+- 3-second HLS segment generation
+- realtime telemetry
+- actual 15-second four-channel production test using the real WeatherRenderer
 
-```bash
-git add .
-git commit -m "WeatherStream v0.1.7.1 Roller Weather Network"
-git push
+In the four-channel smoke test, every channel advanced **5 three-second HLS segments during 15 seconds of wall-clock time**, i.e. approximately **1.00x realtime**.
 
-git tag v0.1.7.1
-git push origin v0.1.7.1
-```
-
----
-
-## Upgrade from v0.1.6.1
-
-Your existing `/config` volume can be reused.
-
-v0.1.7.1 migrates settings schema:
-
-```text
-7 -> 8
-```
-
-Migration behavior:
-
-- existing ZIPs, radar, themes, music, severe-weather settings, and custom branding are preserved
-- if the old untouched defaults still say `WeatherStream Local`, the on-air default is upgraded to `Roller Weather Network / RWN`
-- a genuinely custom station name/callsign/slogan is preserved
-- `condition_focus`, `spc_outlook`, and `weather_history` are inserted into an existing normal sequence when appropriate
-- Smart Programming, dayparts, SPC, history, and cache settings receive safe defaults
-- the v0.1.6.1 clear-sky/WMO-code-0 correction is preserved
-
----
-
-## Important data-source notes
-
-**NWS alerts are authoritative for warning/takeover behavior.** SPC categorical outlooks and model Storm Potential are forecast guidance and are labeled accordingly.
-
-The build does not fabricate observed lightning strikes. Storm Potential continues to represent model guidance rather than live lightning observations.
-
-Radar/map/data providers may occasionally be unavailable. WeatherStream's renderer is designed to use cached material where possible and expose source failures through `/api/status` rather than crashing the HLS stream.
-
----
-
-## v0.1.7.1 validation performed
-
-The release was validated with:
-
-- Python compilation of all application modules
-- Admin JavaScript syntax validation
-- v0.1.6.1 schema-7 to v0.1.7.1 schema-8 migration
-- preservation of custom station branding during migration
-- WMO code `0` => `Clear`
-- Broadcast Director / daypart sequence generation
-- smart rain/storm/SPC filtering logic
-- SQLite observation recording and history summaries
-- Condition Focus rendering at 1280×720
-- 24-Hour History rendering at 1280×720
-- SPC Outlook rendering at 1280×720 using synthetic service data
-- built-in transparent RWN logo rendering
-- XMLTV generation with matching `rwn.local` channel ID
-- FastAPI startup
-- `/health`
-- `/api/status`
-- `/guide.xml`
-- `/admin`
-- built-in `/branding/logo.png`
-- real FFmpeg H.264/AAC startup
-- rolling HLS `.m3u8` and `.ts` segment generation
-
-The build environment does not provide reliable outbound DNS, so live Open-Meteo/NWS/RainViewer/OSM/TIGERweb/GeoNames/SPC requests must receive their final end-to-end network validation on the deployed Docker host.
+This test uses synthetic weather data because the build environment does not provide reliable outbound weather API access. The HLS/FFmpeg/rendering path itself is real.
