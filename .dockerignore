@@ -1,0 +1,9 @@
+.git
+.github
+__pycache__
+*.pyc
+config/*
+!config/.gitkeep
+music/*
+!music/.gitkeep
+weatherstream-v*.zip

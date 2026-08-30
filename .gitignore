@@ -1,0 +1,6 @@
+config/settings.json
+music/*
+!music/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store

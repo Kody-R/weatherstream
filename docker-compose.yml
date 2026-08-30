@@ -1,0 +1,20 @@
+services:
+  weatherstream:
+    build: .
+    # After publishing to GHCR, replace "build: ." with, for example:
+    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.1.7.1
+    container_name: weatherstream
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./config:/config
+      - ./music:/music:ro
+    environment:
+      - TZ=America/Chicago
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
