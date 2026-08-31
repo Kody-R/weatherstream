@@ -1,29 +1,36 @@
 # Changelog
 
-## 0.2.5.1
+## 0.2.6
 
 ### Added
 
-- Intel media VAAPI userspace driver and `vainfo` in the Docker image
-- Enumeration and metadata for every mapped `/dev/dri/renderD*` node
-- Global and per-channel GPU/render-node selection
-- Real one-frame QSV/VAAPI encode probes before a device is marked READY
-- Hardware probe details and actual encoder/device channel telemetry
-- Settings schema 16 migration for `encoder_device`
-- Unit tests for render-node selection and generated QSV/VAAPI FFmpeg commands
+- Seasonal Tropical Weather Update for normal RWN Local programming
+- Stable RWN Tropics Watch IPTV/XMLTV channel
+- Official NHC current-system, Atlantic outlook, and forecast-track ingestion
+- Gulf-region, forecast-radius, development-probability, and local-alert activation logic
+- Tropical overview, systems board, forecast-track, and local-impact slides
+- Dynamic active-storm XMLTV descriptions
+- Tropical Admin settings, previews, status, data-source diagnostics, and webhook events
+- Intel render-node enumeration, metadata, real QSV/VAAPI encode probes, and Admin device selection from v0.2.5.1
+- Global and per-channel `encoder_device` support
+- Hardware-selection, generated-command, tropical-logic, and lineup regression tests
+- Schema 17 migration covering tropical and hardware defaults
 
 ### Changed
 
-- Linux QSV initialization now uses the selected DRM render node as `child_device` with VAAPI as the child device type
-- VAAPI explicitly initializes the selected DRM render node
-- Auto encoder selection considers only devices that passed an actual encode probe
-- On-demand HLS requests remain pending while an early hardware failure falls back to software
+- On-demand channel supervision can automatically start and retain Tropics Watch while an official trigger or cooldown is active
+- Render-context revisions now include tropical-data state
+- Normal RWN Local sequences receive a seasonal tropical update without requiring an encoder restart
+- QSV uses the selected DRM render node as a Linux VAAPI child device; VAAPI explicitly initializes the selected node
+- Failed hardware starts immediately retry with `libx264` without abandoning the original on-demand request
 
-### Fixed
+### Security and reliability
 
-- Removed the hard-coded `/dev/dri/renderD128` assumption
-- Hardware initialization failures now immediately retry with `libx264` instead of waiting for the normal supervisor delay
-- Manual/settings restarts retry the configured hardware after a previous fallback
+- NHC-discovered forecast files are restricted to official HTTPS hosts, with every redirect revalidated
+- KMZ/KML reads are size bounded
+- Tropical refresh failures retain last-known-good data and never block frame rendering
+- Forecast graphics explicitly distinguish track/center guidance from the broader impact area
+- Removed the hard-coded `/dev/dri/renderD128` assumption and validate render-node settings before use
 
 ## 0.2.5
 

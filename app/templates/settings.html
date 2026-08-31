@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.2.5.1 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.2.6 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.5.1</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.6</div>
       <h1>Channel Configuration</h1>
     </div>
     <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
@@ -100,7 +100,7 @@
         <h2>Presentation</h2>
         <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.2.5.1</span>
+      <span class="pill">v0.2.6</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -244,13 +244,31 @@
       <label class="checkbox"><input id="perZipChannels" type="checkbox"> One Local channel per ZIP</label>
       <label class="checkbox"><input id="radarChannelEnabled" type="checkbox"> RWN Radar channel</label>
       <label class="checkbox"><input id="severeChannelEnabled" type="checkbox"> RWN Severe Weather channel</label>
+      <label class="checkbox"><input id="tropicsChannelEnabled" type="checkbox"> RWN Tropics Watch channel</label>
       <label>Maximum ZIP channels<input id="maxZipChannels" type="number" min="1" max="24" step="1"></label>
       <label class="wide">ZIP-channel sequence <span class="hint">Radar is intentionally on the shared RWN Radar channel.</span><input id="zipChannelSequence"></label>
       <label class="wide">RWN Radar sequence<input id="radarChannelSequence"></label>
       <label class="wide">RWN Severe idle sequence<input id="severeChannelSequence"></label>
+      <label class="wide">RWN Tropics Watch sequence<input id="tropicsChannelSequence"></label>
     </div>
     <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Channel Settings</button><button class="button ghost" onclick="restartStream()">Restart All Channels</button></div>
     <div class="locations top-gap" id="channelGrid"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><div><h2>Tropical Weather & Tropics Watch</h2><p>Official National Hurricane Center outlooks, active systems, forecast tracks, Gulf proximity, and local NWS tropical alerts. The channel stays in the lineup but its on-demand encoder starts automatically only when configured triggers are active.</p></div><span class="pill" id="tropicalState">CHECKING</span></div>
+    <div class="form-grid">
+      <label class="checkbox"><input id="tropicalEnabled" type="checkbox"> Enable official NHC tropical data</label>
+      <label class="checkbox"><input id="tropicalSegmentEnabled" type="checkbox"> Add Tropical Weather Update during hurricane season</label>
+      <label class="checkbox"><input id="tropicalAutoStart" type="checkbox"> Auto-start Tropics Watch for Gulf/local triggers</label>
+      <label>NHC refresh interval (seconds)<input id="tropicalRefresh" type="number" min="300" max="3600" step="60"></label>
+      <label>Local activation radius (miles)<input id="tropicalRadius" type="number" min="100" max="2000" step="50"></label>
+      <label>Gulf development threshold (%)<input id="tropicalThreshold" type="number" min="0" max="100" step="10"></label>
+      <label>Clear cooldown (hours)<input id="tropicalCooldownHours" type="number" min="0" max="24" step="1"></label>
+    </div>
+    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Tropical Settings</button><button class="button ghost" onclick="manualRefresh()">Refresh NHC Data</button><button class="button ghost" onclick="previewTropical('tropical_update')">Preview Update</button><button class="button ghost" onclick="previewTropical('tropical_track')">Preview Track</button><button class="button ghost" onclick="previewTropical('tropical_local')">Preview Local Impact</button></div>
+    <div class="status-grid top-gap" id="tropicalGrid"></div>
+    <p class="hint top-gap">The forecast track describes possible center locations, not the full extent of impacts. WeatherStream never generates evacuation instructions; follow NHC, NWS, and local officials.</p>
   </section>
 
   <section class="card">
@@ -403,6 +421,7 @@
       <label class="wide">Webhook URL <span class="hint">HTTP(S) only. Private/LAN targets are blocked unless explicitly allowed.</span><input id="notificationUrl" type="url" autocomplete="off" placeholder="https://example.net/weatherstream-hook"></label>
       <label class="checkbox"><input id="notificationAllowPrivate" type="checkbox"> Allow a trusted private/LAN target</label>
       <label class="checkbox"><input class="notification-event" value="severe" type="checkbox"> Severe alerts</label>
+      <label class="checkbox"><input class="notification-event" value="tropical" type="checkbox"> Tropical systems and channel activation</label>
       <label class="checkbox"><input class="notification-event" value="source" type="checkbox"> Data-source health</label>
       <label class="checkbox"><input class="notification-event" value="stream" type="checkbox"> Stream lifecycle</label>
       <label class="checkbox"><input class="notification-event" value="settings" type="checkbox"> Settings changes</label>
@@ -583,10 +602,20 @@ async function loadSettings() {
   perZipChannels.checked = settings.channels?.per_zip_enabled !== false;
   radarChannelEnabled.checked = settings.channels?.radar_enabled !== false;
   severeChannelEnabled.checked = settings.channels?.severe_enabled !== false;
+  tropicsChannelEnabled.checked = settings.channels?.tropics_enabled !== false;
   maxZipChannels.value = settings.channels?.max_zip_channels ?? 12;
   zipChannelSequence.value = (settings.channels?.zip_sequence || []).join(',');
   radarChannelSequence.value = (settings.channels?.radar_sequence || []).join(',');
   severeChannelSequence.value = (settings.channels?.severe_idle_sequence || []).join(',');
+  tropicsChannelSequence.value = (settings.channels?.tropics_sequence || []).join(',');
+  const tropical = settings.tropical || {};
+  tropicalEnabled.checked = tropical.enabled !== false;
+  tropicalSegmentEnabled.checked = tropical.segment_enabled !== false;
+  tropicalAutoStart.checked = tropical.auto_start !== false;
+  tropicalRefresh.value = tropical.refresh_seconds ?? 600;
+  tropicalRadius.value = tropical.activation_radius_miles ?? 750;
+  tropicalThreshold.value = tropical.gulf_development_threshold ?? 40;
+  tropicalCooldownHours.value = Math.round((tropical.cooldown_seconds ?? 21600) / 3600);
   perfRenderFps.value = settings.video?.render_fps ?? 5;
   perfContentFps.value = settings.video?.content_fps ?? 3;
   perfOutputFps.value = settings.video?.output_fps ?? 15;
@@ -651,6 +680,15 @@ async function saveGeneral() {
     service_area: serviceArea.value.trim(),
     theme: theme.value,
     public_base_url: publicBaseUrl.value.trim(),
+    tropical: {
+      enabled: tropicalEnabled.checked,
+      segment_enabled: tropicalSegmentEnabled.checked,
+      auto_start: tropicalAutoStart.checked,
+      refresh_seconds: Number(tropicalRefresh.value || 600),
+      activation_radius_miles: Number(tropicalRadius.value || 750),
+      gulf_development_threshold: Number(tropicalThreshold.value || 40),
+      cooldown_seconds: Number(tropicalCooldownHours.value || 0) * 3600
+    },
     notifications: {
       enabled: notificationsEnabled.checked,
       webhook_url: notificationUrl.value.trim(),
@@ -682,10 +720,12 @@ async function saveGeneral() {
       per_zip_enabled: perZipChannels.checked,
       radar_enabled: radarChannelEnabled.checked,
       severe_enabled: severeChannelEnabled.checked,
+      tropics_enabled: tropicsChannelEnabled.checked,
       max_zip_channels: Number(maxZipChannels.value || 12),
       zip_sequence: zipChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
       radar_sequence: radarChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
-      severe_idle_sequence: severeChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean)
+      severe_idle_sequence: severeChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
+      tropics_sequence: tropicsChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean)
     },
     video: {
       render_fps: Number(perfRenderFps.value || 5),
@@ -855,6 +895,7 @@ async function testLocal8Block() {
 
 function previewSlide(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?t=${Date.now()}`; notify(`Previewing ${name} for 12 seconds. Live channel unchanged.`); }
 function previewTestAlert(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?test_alert=true&t=${Date.now()}`; notify('TEST alert preview for 12 seconds — live channel unchanged.'); }
+function previewTropical(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?channel_mode=tropics&t=${Date.now()}`; notify(`Previewing ${name.replaceAll('_',' ')} for 12 seconds. Live channels are unchanged.`); }
 function stopRundownPreview() {
   if (rundownTimer) clearTimeout(rundownTimer);
   rundownTimer = null; previewHoldUntil = 0; rundownState.textContent = 'Stopped';
@@ -906,6 +947,10 @@ async function refreshStatus() {
     radarState.className = 'pill ' + (s.radar.frames_loaded ? 'ok' : 'bad');
     takeoverState.textContent = s.severe_weather?.takeover_active ? 'TAKEOVER ACTIVE' : 'NORMAL';
     takeoverState.className = 'pill ' + (s.severe_weather?.takeover_active ? 'bad' : 'ok');
+    const tropical = s.tropical || {}, activation = tropical.activation || {};
+    tropicalState.textContent = activation.active ? 'TROPICS WATCH ACTIVE' : (tropical.season_active ? 'SEASON MONITORING' : 'STANDBY');
+    tropicalState.className = 'pill ' + (activation.active ? 'bad' : (tropical.enabled ? 'ok' : ''));
+    tropicalGrid.innerHTML = `<div><span>Atlantic systems</span><strong>${tropical.system_count||0}</strong></div><div><span>Season</span><strong>${tropical.season_active?'ACTIVE':'Off-season'}</strong></div><div><span>Gulf/local trigger</span><strong>${activation.active?'ACTIVE':'Clear'}</strong></div><div><span>Nearest system</span><strong>${activation.nearest?activation.nearest.name+' • '+activation.nearest.distance_miles+' mi':'None'}</strong></div><small>${(activation.reasons||[]).join(' • ') || tropical.last_error || 'Official NHC monitoring is current.'}</small>`;
     statusGrid.innerHTML = `
       <div><span>Configured ZIPs</span><strong>${s.configured_locations}</strong></div>
       <div><span>RWN Channels</span><strong>${s.stream.channel_count||0}</strong></div>
@@ -950,7 +995,7 @@ async function refreshStatus() {
 function initializeSettingsSearch() {
   const impacts = [
     ['background audio','RESTART'],['text-to-speech','RESTART'],['realtime video','RESTART'],['network channels','RESTART'],
-    ['zip codes','REFRESH'],['maps & city','REFRESH'],['radar studio','REFRESH'],['forecast intelligence','REFRESH'],['advanced refresh','REFRESH']
+    ['zip codes','REFRESH'],['maps & city','REFRESH'],['radar studio','REFRESH'],['forecast intelligence','REFRESH'],['tropical weather','REFRESH'],['advanced refresh','REFRESH']
   ];
   document.querySelectorAll('article.card, main > section.card').forEach(card => {
     if (card.matches('[data-search-ignore]')) return;

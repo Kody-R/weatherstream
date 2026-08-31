@@ -9,7 +9,7 @@
 <body>
   <main class="shell">
     <header class="topbar">
-      <div><div class="eyebrow">WEATHERSTREAM v0.2.5.1</div><h1>Roller Weather Network</h1></div>
+      <div><div class="eyebrow">WEATHERSTREAM v0.2.6</div><h1>Roller Weather Network</h1></div>
       <a class="button" href="/admin">Open Admin</a>
     </header>
 
@@ -63,6 +63,7 @@ async function refreshStatus(){
       <div><span>RWN Severe</span><strong>${s.severe_weather?.takeover_active?'ACTIVE':'Standby'}</strong></div>
       <div><span>Radar</span><strong>${s.radar?.frames_loaded?'Ready':'Loading'}</strong></div>
       <div><span>SPC ZIPs</span><strong>${s.spc?.locations_loaded||0}</strong></div>`;
+    statusGrid.insertAdjacentHTML('beforeend', `<div><span>Tropics Watch</span><strong>${s.tropical?.activation?.active?'ACTIVE':(s.tropical?.season_active?'Monitoring':'Standby')}</strong></div>`);
     channelList.innerHTML=(c.channels||[]).map((ch,index)=>`<div class="location-row"><div><strong>${ch.name}</strong><span>${ch.postal_code?ch.postal_code+' • ':''}${ch.mode.toUpperCase()}</span><div class="copy-row"><code id="channelUrl${index}">${ch.url}</code><button class="button mini ghost" onclick="copyElement('channelUrl${index}',this)">Copy URL</button></div></div><div class="row-actions"><span class="pill ${ch.running?'ok':''}">${ch.running?'ON AIR':(ch.lifecycle_state||'IDLE').replace('_',' ')}</span></div></div>`).join('')||'<div class="empty">Add a ZIP code in Admin to start RWN channels.</div>';
   }catch(e){}
 }

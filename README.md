@@ -1,39 +1,54 @@
-# WeatherStream v0.2.5.1 — Intel Hardware Encoding Reliability Patch
+# WeatherStream v0.2.6 — RWN Tropics Watch
 
-WeatherStream generates Roller Weather Network (RWN) local-weather IPTV channels for Jellyfin, VLC, and other HLS clients. **v0.2.5.1 fixes the Linux Intel QSV/VAAPI path, removes the hard-coded `/dev/dri/renderD128` assumption, adds per-device probe/selection, and makes hardware failure fall back to `libx264` immediately without abandoning an on-demand tune request.**
+WeatherStream generates Roller Weather Network (RWN) local-weather IPTV channels for Jellyfin, VLC, and other HLS clients. **v0.2.6 adds hurricane-season Tropical Weather Updates and a dedicated RWN Tropics Watch channel driven by official National Hurricane Center data, Gulf forecast-track detection, local proximity, and NWS tropical alerts.** The v0.2.5 setup/QoL work and v0.2.4 performance foundation are retained.
 
-## What's new in v0.2.5.1
+## What's new in v0.2.6
 
-- Docker image now installs `intel-media-va-driver` and `vainfo`
-- Enumerates every mapped `/dev/dri/renderD*` node
-- Stores an `encoder_device` setting globally and as a per-channel override
-- Broadcast Dashboard and Channel Lineup expose GPU/render-node selection
-- QSV uses Linux `child_device=/dev/dri/renderD*` initialization with `child_device_type=vaapi`
-- VAAPI uses the explicitly selected DRM render node
-- QSV and VAAPI are marked READY only after a real one-frame H.264 hardware encode succeeds
-- `vainfo` results, PCI slot, driver, vendor/device IDs, and per-node probe state are exposed through encoder telemetry
-- Failed QSV/VAAPI startup immediately retries the same channel with `libx264`
-- The original HLS playlist request remains alive through hardware→software fallback
-- Channel telemetry reports the requested encoder/device, actual encoder/device, fallback reason, and fallback count
-- No code path hard-codes `renderD128` as the encoder device
-- Settings schema 16 migration defaults existing installations to `encoder_device: auto`
+- Seasonal Tropical Weather Update inserted into RWN Local programming from June 1 through November 30
+- Permanent `RWN Tropics Watch` M3U/XMLTV channel that remains discoverable while its on-demand encoder is idle
+- Automatic Tropics Watch activation for:
+  - an active or forecast storm point entering the Gulf operational region
+  - a storm center/forecast point entering the configured radius around the primary ZIP
+  - an NHC Gulf disturbance reaching the configured development threshold
+  - a local NWS tropical storm, hurricane, storm-surge, hurricane-local-statement, or extreme-wind alert
+- Six-hour default cooldown after the final trigger clears, avoiding channel start/stop thrashing
+- Official NHC current-storm JSON, Atlantic Tropical Weather Outlook RSS, and forecast-track KMZ ingestion
+- Four new slides: `tropical_update`, `tropical_systems`, `tropical_track`, and `tropical_local`
+- Revision-aware tropical snapshots and last-known-good fallback outside the video-frame hot path
+- Dynamic Tropics Watch XMLTV titles containing active storm names
+- Tropical lifecycle events available to the v0.2.5 webhook system
+- Admin controls for the segment, channel, auto-start, refresh interval, radius, development threshold, cooldown, previews, and lineup sequence
+- Settings schema 17 migration
 
-### Docker / CasaOS GPU mapping
+### v0.2.5.1 reliability patch carried forward
 
-The container can only probe devices that are mapped into it. For Compose, enable:
+The v0.2.5.1 Intel hardware-encoding fixes are fully integrated into v0.2.6:
 
-```yaml
-devices:
-  - /dev/dri:/dev/dri
-```
+- The Docker image installs `intel-media-va-driver` and `vainfo`.
+- Every mapped `/dev/dri/renderD*` node is enumerated instead of assuming `renderD128`.
+- QSV and VAAPI devices are marked READY only after a real one-frame H.264 encode succeeds.
+- Linux QSV uses the selected DRM node as `child_device` with VAAPI as its child-device type.
+- Global and per-channel render-node selection is available in the Dashboard and Channel Lineup.
+- Failed hardware startup immediately retries the same channel with `libx264` while preserving the original on-demand tune request.
+- Channel telemetry reports requested and active encoder/device details, fallback reason, and fallback count.
 
-Then open **Admin → Broadcast Dashboard → Performance Manager**, click **Re-probe GPUs**, choose QSV or VAAPI, and select either **Auto — first READY device** or a specific `/dev/dri/renderD*` node. The per-channel Channel Lineup page can override the global device.
+### Official data and refresh behavior
 
-`READY` now means the test encode succeeded; seeing `h264_qsv` or `h264_vaapi` in `ffmpeg -encoders` by itself is no longer considered sufficient.
+WeatherStream reads only official NHC/NOAA hosts. Forecast-track URLs discovered in NHC JSON are restricted to an HTTPS host allow-list, redirects are revalidated, and KMZ/KML extraction is size bounded. The default refresh interval is ten minutes; failed refreshes retain the last successful tropical snapshot and surface the error in Data Source Diagnostics.
 
-## v0.2.5 — Guided Setup & Operator QoL
+Official feed references:
 
-WeatherStream v0.2.5 made fresh installation easier to configure, made the settings surface searchable, added a non-disruptive full-rundown preview, and introduced bounded webhook notifications for structured operational events. The v0.2.4 revision-aware rendering and pooled-refresh performance foundation is retained.
+- [NHC and CPHC RSS feeds](https://www.nhc.noaa.gov/mobile/rss.html)
+- [NHC GIS data via RSS](https://www.nhc.noaa.gov/gis/rss.php)
+- [NHC tropical-cyclone status JSON reference](https://www.nhc.noaa.gov/productexamples/NHC_Tropical_Cyclone_Status_JSON_File_Reference.pdf)
+
+### Channel lifecycle
+
+Tropics Watch stays in the IPTV lineup year-round so Jellyfin does not repeatedly lose and rediscover it. With on-demand encoding, it normally consumes no FFmpeg encoder. An official Gulf/local trigger starts the worker and refreshes its activity lease until the trigger and configured cooldown both clear. Manual playback can still start the channel at any time.
+
+The forecast track describes possible center positions, not the full extent of hazardous weather. WeatherStream displays official data and local-alert language, but never generates evacuation or protective-action instructions.
+
+## v0.2.5 guided setup and operator QoL
 
 ### What's new in v0.2.5
 
@@ -61,7 +76,7 @@ Events use this envelope:
 ```json
 {
   "product": "WeatherStream",
-  "version": "0.2.5.1",
+  "version": "0.2.6",
   "event": {
     "time": 1788144000.0,
     "kind": "source",
@@ -615,10 +630,10 @@ The response is `audio/wav`.
 
 ## Upgrade / settings schema
 
-v0.2.5.1 advances the settings schema while retaining all earlier migrations:
+v0.2.6 advances the settings schema while retaining all earlier migrations:
 
 ```text
-13 → 14 → 15 → 16
+13 → 14 → 15 → 16 → 17
 ```
 
 Migration behavior:
@@ -629,7 +644,8 @@ Migration behavior:
 - Existing TTS settings and downloaded voices under `/config` are preserved.
 - TTS remains optional.
 - Webhook notifications are added disabled, with no destination configured.
-- Existing encoder choices are preserved; the new GPU device selector defaults to `auto`.
+- Tropical monitoring and its stable channel entry are added enabled, using on-demand encoding unless the channel override selects Always On.
+- Existing encoder choices are preserved and receive `encoder_device: auto`, removing the old hard-coded render-node assumption.
 - An untouched v0.2.2 Local on the 8s sequence is migrated to the new phase list:
 
 ```text
@@ -657,6 +673,15 @@ volumes:
 ```
 
 No separate TTS volume is needed because voices and cached announcements live under the persistent `/config` tree.
+
+For Intel QSV/VAAPI, map the host DRM directory into the container:
+
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+```
+
+Then use **Admin → Broadcast Dashboard → Performance Manager → Re-probe GPUs**. A READY result means an actual test encode succeeded, not merely that FFmpeg lists the encoder.
 
 ## Performance profile
 

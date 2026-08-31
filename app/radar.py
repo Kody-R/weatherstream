@@ -70,7 +70,7 @@ class RadarManager:
         self._view_errors: dict[str, str | None] = {name: None for name in VIEW_NAMES}
         self._resized_frame_cache: dict[tuple[str, int, int, int], Image.Image] = {}
         self._resized_map_cache: dict[tuple[str, int, int, int], Image.Image] = {}
-        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.2.5.1"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
+        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.2.6"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
         CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
@@ -198,7 +198,7 @@ class RadarManager:
         default_zoom = {"local": 7, "regional": 6, "wide": 5}[view]
         zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.5.1 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.6 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
         client = self._client
         client.headers.update(headers)
@@ -228,7 +228,7 @@ class RadarManager:
         radar = settings.get("radar", {})
         frame_count = max(3, min(12, int(radar.get("frame_count", 8))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.5.1 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.6 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
 
         client = self._client

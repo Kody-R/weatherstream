@@ -27,6 +27,7 @@ from app.renderer import BUILTIN_RWN_LOGO, WeatherRenderer
 from app.spc import SPCManager
 from app.streamer import LIVE_DIR, PREVIEW_PATH, Streamer, encoder_capabilities
 from app.tts import TTSManager
+from app.tropical import TropicalManager
 from app.weather import WeatherManager, resolve_zip
 from app.operations import BUILTIN_PROFILES, create_backup_bytes, restore_backup_bytes, create_diagnostics_bytes, system_status
 from app.observability import observability
@@ -35,8 +36,8 @@ from app.security import SlidingWindowLimiter, authentication_enabled, client_ad
 
 BASE=Path(__file__).resolve().parent
 config_store=ConfigStore(); history_store=HistoryStore(); cache_manager=CacheManager(config_store)
-weather_manager=WeatherManager(config_store,history_store); place_manager=PlaceManager(config_store); radar_manager=RadarManager(config_store); spc_manager=SPCManager(config_store)
-renderer=WeatherRenderer(config_store,weather_manager,radar_manager,place_manager,history_store,spc_manager); tts_manager=TTSManager(config_store); streamer=Streamer(config_store,renderer,tts_manager)
+weather_manager=WeatherManager(config_store,history_store); place_manager=PlaceManager(config_store); radar_manager=RadarManager(config_store); spc_manager=SPCManager(config_store); tropical_manager=TropicalManager(config_store)
+renderer=WeatherRenderer(config_store,weather_manager,radar_manager,place_manager,history_store,spc_manager,tropical_manager); tts_manager=TTSManager(config_store); streamer=Streamer(config_store,renderer,tts_manager,tropical_manager)
 notification_manager=NotificationManager(config_store)
 _service_ready = False
 _rate_limiter = SlidingWindowLimiter()
@@ -47,17 +48,17 @@ _status_cached: dict | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _service_ready
-    notification_manager.start(); weather_manager.start(); place_manager.start(); radar_manager.start(); spc_manager.start(); cache_manager.start(); streamer.start()
+    notification_manager.start(); weather_manager.start(); place_manager.start(); radar_manager.start(); spc_manager.start(); tropical_manager.start(); cache_manager.start(); streamer.start()
     _service_ready = True
-    observability.event("lifecycle", "WeatherStream service started", version="0.2.5.1")
+    observability.event("lifecycle", "WeatherStream service started", version="0.2.6")
     try:
         yield
     finally:
         _service_ready = False
         observability.event("lifecycle", "WeatherStream service stopping")
-        notification_manager.stop(); streamer.stop(); tts_manager.stop(); cache_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
+        notification_manager.stop(); streamer.stop(); tts_manager.stop(); cache_manager.stop(); tropical_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
 
-app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.2.5.1",lifespan=lifespan)
+app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.2.6",lifespan=lifespan)
 templates=Jinja2Templates(directory=str(BASE/"templates")); app.mount("/static",StaticFiles(directory=str(BASE/"static")),name="static")
 LIVE_DIR.mkdir(parents=True,exist_ok=True)
 
@@ -122,7 +123,7 @@ class SettingsRequest(BaseModel):
     station_name:str|None=None; station_callsign:str|None=None; station_slogan:str|None=None; service_area:str|None=None; public_base_url:str|None=None; theme:str|None=None
     weather_refresh_seconds:int|None=None; alert_refresh_seconds:int|None=None; nws_user_agent:str|None=None
     music:dict|None=None; radar:dict|None=None; alerts:dict|None=None; presentation:dict|None=None; slides:dict|None=None; branding:dict|None=None; maps:dict|None=None
-    storm_guidance:dict|None=None; spc:dict|None=None; history:dict|None=None; smart_programming:dict|None=None; dayparts:dict|None=None; cache:dict|None=None; channels:dict|None=None; video:dict|None=None; performance:dict|None=None; custom_profiles:dict|None=None; tts:dict|None=None; notifications:dict|None=None
+    storm_guidance:dict|None=None; spc:dict|None=None; tropical:dict|None=None; history:dict|None=None; smart_programming:dict|None=None; dayparts:dict|None=None; cache:dict|None=None; channels:dict|None=None; video:dict|None=None; performance:dict|None=None; custom_profiles:dict|None=None; tts:dict|None=None; notifications:dict|None=None
 class TtsTestRequest(BaseModel):
     text:str|None=None; voice:str|None=None; speed:float|None=None; volume:float|None=None
 class TtsVoiceRequest(BaseModel):
@@ -154,7 +155,7 @@ def api_settings(): return config_store.get()
 @app.get("/api/setup/status")
 def api_setup_status():
     settings=config_store.get(); locations=settings.get("locations") or []
-    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.2.5.1"}
+    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.2.6"}
 
 @app.post("/api/setup/complete")
 def api_setup_complete(payload:SetupRequest):
@@ -171,7 +172,7 @@ def api_setup_complete(payload:SetupRequest):
         "theme":payload.theme or "local-90s",
         "channels":{"streaming_mode":payload.streaming_mode or "on_demand"},
     })
-    weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); streamer.request_reconfigure()
+    weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); tropical_manager.request_refresh(); streamer.request_reconfigure()
     observability.event("settings","First-run setup completed",postal_code=postal,location_id=location.get("id"))
     return {"ok":True,"location":location,"redirect":"/"}
 
@@ -183,6 +184,7 @@ def api_update_settings(payload:SettingsRequest):
     if set(changes) & {"maps"}: place_manager.request_refresh()
     if set(changes) & {"radar", "maps"}: radar_manager.request_refresh()
     if set(changes) & {"spc"}: spc_manager.request_refresh()
+    if set(changes) & {"tropical"}: tropical_manager.request_refresh()
     if "channels" in changes: streamer.request_reconfigure()
     # Encoder/audio/performance changes need a worker restart. Presentation, station,
     # slide timing and theme settings hot-reload from ConfigStore in the renderer.
@@ -210,7 +212,7 @@ def api_set_primary(location_id:str):
     weather_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); streamer.request_reconfigure(); return {"ok":True}
 
 @app.post("/api/refresh")
-def api_refresh(): weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); observability.event("refresh", "Manual data refresh requested"); return {"ok":True}
+def api_refresh(): weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); tropical_manager.request_refresh(); observability.event("refresh", "Manual data refresh requested"); return {"ok":True}
 @app.post("/api/stream/restart")
 def api_stream_restart(): streamer.request_restart(reason="manual all-channel restart"); observability.event("stream", "All active channels restart requested"); return {"ok":True}
 @app.post("/api/cache/clean")
@@ -262,8 +264,12 @@ def api_status():
     sources["spc"]={"last_success":sstat.get("last_update") if not sstat.get("last_error") else None,"last_error":sstat.get("last_error")}
     sources["radar"]={"last_success":_source_stamp(rstat.get("last_update")),"last_error":rstat.get("last_error")}; sources["geonames"]={"last_success":_source_stamp(pstat.get("last_update")),"last_error":pstat.get("last_error")}
     all_alerts=sum(len(v or []) for v in (snapshot.get("alerts_by_location") or {}).values())
+    primary_location=next((loc for loc in settings.get("locations",[]) if loc.get("id")==pid),None)
+    primary_alerts=(snapshot.get("alerts_by_location") or {}).get(pid) or []
+    tropical_status=tropical_manager.status(primary_location,primary_alerts)
+    sources["nhc_tropical"]={"last_success":tropical_status.get("last_update") if not tropical_status.get("last_error") else None,"last_error":tropical_status.get("last_error")}
     result = {
-        "version":"0.2.5.1","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign")},"security":{"admin_authentication":authentication_enabled()},
+        "version":"0.2.6","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign")},"security":{"admin_authentication":authentication_enabled()},
         "weather":{"last_weather_update":snapshot.get("last_weather_update"),"last_alert_update":snapshot.get("last_alert_update"),"last_error":snapshot.get("last_error"),"locations_loaded":len(snapshot.get("locations",{})),"active_alerts":all_alerts,"location_status":snapshot.get("location_status") or {},"performance":weather_manager.performance_status()},
         "severe_weather":{"takeover_active":renderer.takeover_alert_for(pid) is not None,"top_event":((snapshot.get("alerts_by_location") or {}).get(pid) or [{}])[0].get("event") if ((snapshot.get("alerts_by_location") or {}).get(pid) or []) else None},
         "programming":renderer.programming_status(*renderer._channel_context(pid,"local")),
@@ -274,7 +280,7 @@ def api_status():
             "retro_effects_enabled":((settings.get("presentation") or {}).get("retro_effects") or {}).get("enabled",False),
         },
         "radar":rstat,"places":pstat,"spc":sstat,"history":hstat,"storm_guidance":{"available":bool((snapshot.get("storm_guidance") or {}).get("hourly")),"last_error":(snapshot.get("storm_guidance") or {}).get("error")},
-        "sources":sources,"cache":{**cache_manager.status(),"retention_hours":(settings.get("cache") or {}).get("retention_hours",48)},"render_cache":renderer.context_cache_status(),"stream":stream_status,"tts":tts_manager.status(settings),"notifications":notification_manager.status(),"configured_locations":len(settings.get("locations",[])),
+        "sources":sources,"cache":{**cache_manager.status(),"retention_hours":(settings.get("cache") or {}).get("retention_hours",48)},"render_cache":renderer.context_cache_status(),"stream":stream_status,"tts":tts_manager.status(settings),"tropical":tropical_status,"notifications":notification_manager.status(),"configured_locations":len(settings.get("locations",[])),
     }
     with _status_lock:
         _status_cached = result
@@ -348,8 +354,8 @@ async def live_playlist(key: str, request: Request):
     initial_status = streamer.channel_status(key) or {}
     fallback_seen = int(initial_status.get("hardware_fallback_count") or 0)
     if str(initial_status.get("requested_encoder") or "software") != "software":
-        # A cold on-demand hardware tune may need to probe mapped render nodes
-        # before FFmpeg starts. Keep that work inside the same client request.
+        # A cold hardware tune may need to probe mapped render nodes before
+        # FFmpeg starts. Keep that work inside the original player request.
         deadline += min(15, startup_timeout)
     while time.monotonic() < deadline:
         try:
@@ -360,8 +366,8 @@ async def live_playlist(key: str, request: Request):
         status = streamer.channel_status(key) or {}
         fallback_count = int(status.get("hardware_fallback_count") or 0)
         if fallback_count > fallback_seen:
-            # Keep the original tune request alive while the same worker switches
-            # from failed QSV/VAAPI to libx264 and produces its first segment.
+            # Keep the tune alive while this worker immediately switches from a
+            # failed hardware encoder to libx264 and creates its first segment.
             fallback_seen = fallback_count
             deadline = max(deadline, time.monotonic() + startup_timeout)
         if status.get("last_error") and not status.get("running") and not status.get("lifecycle_state") == "STARTING":
@@ -426,7 +432,9 @@ def playlist(request:Request):
 def guide_xml():
     settings=config_store.get(); severe={}
     for loc in settings.get("locations",[]): severe[str(loc.get("id"))]=renderer.takeover_alert_for(loc.get("id")) is not None
-    return Response(generate_xmltv(settings,severe_by_location=severe,hours=24),media_type="application/xml",headers={"Cache-Control":"no-store"})
+    pid=settings.get("primary_location_id"); snapshot=weather_manager.snapshot(); location=next((loc for loc in settings.get("locations",[]) if loc.get("id")==pid),None)
+    tropical=tropical_manager.status(location,(snapshot.get("alerts_by_location") or {}).get(pid) or [])
+    return Response(generate_xmltv(settings,severe_by_location=severe,hours=24,tropical_status=tropical),media_type="application/xml",headers={"Cache-Control":"no-store"})
 
 @app.post("/api/channels/{key}/restart")
 def api_channel_restart(key:str):
@@ -511,7 +519,7 @@ def api_profile_save(profile_name:str):
 @app.get("/api/backup")
 def api_backup():
     data=create_backup_bytes(config_store.get())
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.5.1-backup.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.6-backup.zip"'})
 
 @app.post("/api/backup/restore")
 async def api_backup_restore(request:Request):
@@ -519,7 +527,7 @@ async def api_backup_restore(request:Request):
     if not data or len(data)>100*1024*1024: raise HTTPException(status_code=400,detail="Backup must be a ZIP smaller than 100 MB.")
     try: result=restore_backup_bytes(data,config_store,history_store)
     except Exception as exc: raise HTTPException(status_code=400,detail=f"Unable to restore backup: {exc}") from exc
-    weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); streamer.request_restart(reason="backup restore"); streamer.request_reconfigure(); return result
+    weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); tropical_manager.request_refresh(); streamer.request_restart(reason="backup restore"); streamer.request_reconfigure(); return result
 
 @app.post("/api/history/vacuum")
 def api_history_vacuum(): return history_store.vacuum()
@@ -528,18 +536,18 @@ def api_history_vacuum(): return history_store.vacuum()
 def api_diagnostics():
     settings=config_store.get(); status=api_status(); channels={"channels":_channel_payload(None)}
     data=create_diagnostics_bytes(settings,status,channels,streamer)
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.5.1-diagnostics.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.6-diagnostics.zip"'})
 
 @app.get("/health")
-def health(): return {"status":"ok","ready":_service_ready,"version":"0.2.5.1"}
+def health(): return {"status":"ok","ready":_service_ready,"version":"0.2.6"}
 
 @app.get("/health/live")
-def health_live(): return {"status":"ok","version":"0.2.5.1"}
+def health_live(): return {"status":"ok","version":"0.2.6"}
 
 @app.get("/health/ready")
 def health_ready():
-    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.2.5.1"},status_code=503)
-    return {"status":"ok","ready":True,"version":"0.2.5.1"}
+    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.2.6"},status_code=503)
+    return {"status":"ok","ready":True,"version":"0.2.6"}
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics(): return PlainTextResponse(observability.prometheus(), media_type="text/plain; version=0.0.4")
@@ -549,6 +557,12 @@ def api_events(limit:int=100): return {"events":observability.events(limit),"aut
 
 @app.get("/api/notifications/status")
 def api_notifications_status(): return notification_manager.status()
+
+@app.get("/api/tropical/status")
+def api_tropical_status():
+    settings=config_store.get(); snapshot=weather_manager.snapshot(); pid=settings.get("primary_location_id")
+    location=next((loc for loc in settings.get("locations",[]) if loc.get("id")==pid),None)
+    return tropical_manager.status(location,(snapshot.get("alerts_by_location") or {}).get(pid) or [])
 
 @app.post("/api/notifications/test")
 def api_notifications_test():

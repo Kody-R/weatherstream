@@ -62,6 +62,7 @@ def channel_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
     primary=next((x for x in locations if x.get("id")==primary_id),None)
     if primary and cfg.get("radar_enabled",True): raw.append({"id":"rwn.radar","key":"radar","name":"RWN Radar","mode":"radar","location":primary})
     if primary and cfg.get("severe_enabled",True): raw.append({"id":"rwn.severe","key":"severe","name":"RWN Severe Weather","mode":"severe","location":primary})
+    if primary and cfg.get("tropics_enabled",True): raw.append({"id":"rwn.tropics","key":"tropics","name":"RWN Tropics Watch","mode":"tropics","location":primary})
 
     lineup = cfg.get("lineup") if isinstance(cfg.get("lineup"), list) else []
     meta = {str(x.get("key")): x for x in lineup if isinstance(x, dict) and x.get("key")}
@@ -79,9 +80,9 @@ def channel_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
     return specs
 
 
-def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] | None = None, hours: int = 24) -> str:
-    severe_by_location=severe_by_location or {}; specs=channel_specs(settings)
-    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.2.5.1">']
+def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] | None = None, hours: int = 24, tropical_status: dict[str,Any] | None = None) -> str:
+    severe_by_location=severe_by_location or {}; tropical_status=tropical_status or {}; specs=channel_specs(settings)
+    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.2.6">']
     for spec in specs:
         lines += [f'  <channel id="{escape(spec["id"])}">',f'    <display-name>{escape(spec["name"])}</display-name>','  </channel>']
     for spec in specs:
@@ -93,13 +94,21 @@ def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] 
             events=[]; cursor=start
             while cursor<end:
                 b=min(end,cursor+dt.timedelta(hours=1)); events.append((cursor,b,"RWN Radar","Continuous local, regional and wide-area radar from Roller Weather Network.")); cursor=b
-        else:
+        elif spec["mode"]=="severe":
             severe=bool(severe_by_location.get(str(loc.get("id"))))
             events=[]; cursor=start
             while cursor<end:
                 b=min(end,cursor+dt.timedelta(hours=1))
                 title="RWN Severe Weather Coverage" if severe and cursor<=now<b else "RWN Severe Weather Center"
                 desc="Continuous warning details, alert radar and local severe-weather coverage." if "Coverage" in title else "SPC outlooks, storm potential, radar and severe-weather readiness."
+                events.append((cursor,b,title,desc)); cursor=b
+        else:
+            systems=tropical_status.get("systems") or []; names=", ".join(str(x.get("name") or "System") for x in systems[:3])
+            events=[]; cursor=start
+            while cursor<end:
+                b=min(end,cursor+dt.timedelta(hours=1))
+                title=f"RWN Tropics Watch — {names}" if names else "RWN Tropics Watch — Atlantic & Gulf Update"
+                desc="Official NHC system status, forecast tracks, Gulf proximity, and local tropical alerts." if systems else "Atlantic hurricane-season monitoring and the latest official NHC Tropical Weather Outlook."
                 events.append((cursor,b,title,desc)); cursor=b
         for a,b,title,desc in events:
             lines += [f'  <programme start="{_xmltv_time(a)}" stop="{_xmltv_time(b)}" channel="{escape(spec["id"])}">',f'    <title>{escape(title)}</title>',f'    <desc>{escape(desc)}</desc>','    <category>Weather</category>','  </programme>']

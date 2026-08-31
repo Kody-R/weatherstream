@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.2.5.1 / RWN Broadcast Dashboard</title>
+  <title>WeatherStream v0.2.6 / RWN Broadcast Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
-    <div><div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.5.1</div><h1>Broadcast Dashboard</h1></div>
+    <div><div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.6</div><h1>Broadcast Dashboard</h1></div>
     <nav class="nav"><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/admin/settings">Settings</a><a class="button ghost" href="/">Channel Home</a></nav>
   </header>
   <div id="flash" class="flash hidden"></div>
@@ -30,7 +30,7 @@
       <div class="form-grid">
         <label>Mode<select id="perfMode"><option value="adaptive">Adaptive</option><option value="balanced">Balanced</option><option value="manual">Manual</option><option value="maximum_quality">Maximum Quality</option><option value="low_cpu">Low CPU</option></select></label>
         <label>Hardware encoder<select id="encoder"><option value="software">Software / libx264</option><option value="auto">Auto detect</option><option value="qsv">Intel QSV</option><option value="vaapi">VAAPI</option><option value="nvenc">NVIDIA NVENC</option></select></label>
-        <label>GPU / render node<select id="encoderDevice"><option value="auto">Auto — first READY device</option></select><span class="hint">Used by Intel QSV/VAAPI. WeatherStream probes every mapped render node before offering it.</span></label>
+        <label>GPU / render node<select id="encoderDevice"><option value="auto">Auto — first READY device</option></select><span class="hint">Used by Intel QSV/VAAPI. Each mapped render node is verified with a real test encode.</span></label>
         <label class="checkbox"><input id="selfHeal" type="checkbox"> Self-heal stalled HLS encoders</label>
         <label>Stall threshold (sec)<input id="stallSeconds" type="number" min="8" max="120"></label>
         <label class="checkbox"><input id="disableRetro" type="checkbox"> Disable CRT effects when degraded</label>
@@ -64,7 +64,7 @@
     </article>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Recent Operations</h2><p>A bounded in-memory event trail for lifecycle, configuration, refresh, and recovery activity.</p></div><span class="pill">v0.2.5.1</span></div>
+    <div class="card-head"><div><h2>Recent Operations</h2><p>A bounded in-memory event trail for lifecycle, configuration, refresh, and recovery activity.</p></div><span class="pill">v0.2.6</span></div>
     <div id="events" class="locations"><div class="empty">Waiting for operations.</div></div>
   </section>
 </main>

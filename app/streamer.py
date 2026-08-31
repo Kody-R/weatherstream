@@ -13,8 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.hardware import choose_encoder, device_info, encoder_capabilities, normalize_device_setting
 from app.observability import observability
-from app.hardware import encoder_capabilities, choose_encoder, normalize_device_setting, device_info
 
 LIVE_DIR = Path(os.environ.get("WEATHERSTREAM_LIVE", "/tmp/weatherstream/live"))
 MUSIC_DIR = Path(os.environ.get("WEATHERSTREAM_MUSIC", "/music"))
@@ -151,8 +151,8 @@ class ChannelWorker:
         return bool(self._thread and self._thread.is_alive() and not self._stop.is_set())
 
     def request_restart(self, reason: str = "manual", recovery: bool = False) -> None:
-        # Manual/settings restarts explicitly retry the configured hardware. Automatic
-        # stall recovery does not repeatedly hammer a device that already failed.
+        # A deliberate restart retries the configured device; automatic stall
+        # recovery does not repeatedly hammer a device that already failed.
         if not recovery:
             self._hardware_failed_signature = None
             self._hardware_fallback_active = False
@@ -907,14 +907,14 @@ class ChannelWorker:
                 self._terminate_process(); self._process=None
             if not self._stop.is_set():
                 if immediate_retry:
-                    # Do not burn the on-demand startup window waiting on the supervisor.
-                    # The same worker immediately rebuilds FFmpeg with libx264.
+                    # Preserve the original on-demand tune request while the same
+                    # worker rebuilds FFmpeg with libx264.
                     continue
                 time.sleep(2)
 
 
 class Streamer:
-    """v0.2.2.1 multi-channel supervisor with optional on-demand encoders.
+    """Multi-channel supervisor with optional on-demand encoders.
 
     Data services remain continuously available. Channel workers are kept in a
     catalog, but an on-demand worker only starts its Pillow/FFmpeg pipeline when
@@ -922,10 +922,11 @@ class Streamer:
     timeout once viewer requests stop.
     """
 
-    def __init__(self, config_store, renderer, tts_manager) -> None:
+    def __init__(self, config_store, renderer, tts_manager, tropical_manager=None) -> None:
         self.config_store = config_store
         self.renderer = renderer
         self.tts_manager = tts_manager
+        self.tropical_manager = tropical_manager
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._lock = threading.RLock()
@@ -1025,6 +1026,7 @@ class Streamer:
         settings = self.config_store.get()
         channels = settings.get("channels") or {}
         severe_auto = bool(channels.get("severe_auto_start", True))
+        tropical_auto = bool((settings.get("tropical") or {}).get("auto_start", True))
         with self._lock:
             for key in list(self._workers):
                 worker = self._workers[key]
@@ -1044,6 +1046,9 @@ class Streamer:
             lifecycle = worker.lifecycle_mode(settings)
             should_run = lifecycle == "always_on"
             if worker.mode == "severe" and severe_auto and self.renderer.takeover_alert_for(worker.location_id) is not None:
+                should_run = True
+                worker.note_viewer_activity()
+            if worker.mode == "tropics" and tropical_auto and self._tropical_activation(worker, settings):
                 should_run = True
                 worker.note_viewer_activity()
             if should_run and not worker.thread_active():
@@ -1079,6 +1084,14 @@ class Streamer:
         settings = self.config_store.get()
         return max(5, min(60, int((settings.get("channels") or {}).get("startup_timeout_seconds", 12))))
 
+    def _tropical_activation(self, worker: ChannelWorker, settings: dict[str, Any]) -> bool:
+        if not self.tropical_manager:
+            return False
+        location=next((loc for loc in settings.get("locations",[]) if loc.get("id")==worker.location_id),None)
+        try: alerts=(self.renderer.weather_manager.snapshot_for(worker.location_id).get("alerts") or [])
+        except Exception: alerts=[]
+        return bool(self.tropical_manager.activation_status(location,alerts).get("active"))
+
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
@@ -1089,6 +1102,7 @@ class Streamer:
                 channels = settings.get("channels") or {}
                 idle_timeout = max(15, int(channels.get("idle_timeout_seconds", 90)))
                 severe_auto = bool(channels.get("severe_auto_start", True))
+                tropical_auto = bool((settings.get("tropical") or {}).get("auto_start", True))
                 now = time.time()
                 with self._lock:
                     workers = list(self._workers.values())
@@ -1097,15 +1111,18 @@ class Streamer:
                     lifecycle = worker.lifecycle_mode(settings)
                     running = worker.thread_active() or bool(worker._process and worker._process.poll() is None)
                     severe_active = worker.mode == "severe" and severe_auto and self.renderer.takeover_alert_for(worker.location_id) is not None
+                    tropical_active = worker.mode == "tropics" and tropical_auto and self._tropical_activation(worker, settings)
                     if severe_active:
                         # Keep the channel alive during the alert and start the normal
                         # idle grace period when the alert finally clears.
+                        worker.note_viewer_activity()
+                    if tropical_active:
                         worker.note_viewer_activity()
 
                     if lifecycle == "always_on" and not running:
                         worker.start()
                         running = True
-                    elif lifecycle == "on_demand" and running and not severe_active:
+                    elif lifecycle == "on_demand" and running and not severe_active and not tropical_active:
                         # A manually/scheduled Local on the 8s block is active
                         # programming, even if no player has requested a segment in
                         # the last few seconds. Never idle-stop it mid-narration.
@@ -1174,6 +1191,7 @@ class Streamer:
             "idle_timeout_seconds": channels_cfg.get("idle_timeout_seconds", 90),
             "startup_timeout_seconds": channels_cfg.get("startup_timeout_seconds", 12),
             "severe_auto_start": channels_cfg.get("severe_auto_start", True),
+            "tropics_auto_start": (settings.get("tropical") or {}).get("auto_start", True),
             "encoder_capabilities": encoder_capabilities(),
             "channels": statuses,
         }

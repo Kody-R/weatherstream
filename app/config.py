@@ -13,7 +13,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 16,
+    "version": 17,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -32,6 +32,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "per_zip_enabled": True,
         "radar_enabled": True,
         "severe_enabled": True,
+        "tropics_enabled": True,
         "zip_sequence": [
             "station_id", "current", "condition_focus", "today", "nws_forecast",
             "temperature_trend", "hourly", "precipitation", "storm_outlook",
@@ -45,6 +46,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "station_id", "current", "spc_outlook", "storm_outlook",
             "radar_local", "regional_map", "radar_regional"
         ],
+        "tropics_sequence": ["tropical_update", "tropical_systems", "tropical_track", "tropical_local", "radar_wide"],
         "max_zip_channels": 12,
         # Fresh on-demand releases default to on-demand encoding. Upgrades from
         # v0.2.0 preserve their prior always-on behavior until changed in Admin.
@@ -71,6 +73,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "enabled": True,
         "refresh_seconds": 900,
         "minimum_smart_risk": "MRGL",
+    },
+    "tropical": {
+        "enabled": True,
+        "segment_enabled": True,
+        "auto_start": True,
+        "refresh_seconds": 600,
+        "activation_radius_miles": 750,
+        "gulf_development_threshold": 40,
+        "cooldown_seconds": 21600,
     },
     "history": {
         "enabled": True,
@@ -102,7 +113,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.2.5.1 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.2.6 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -176,7 +187,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "notifications": {
         "enabled": False,
         "webhook_url": "",
-        "events": ["severe", "source", "stream"],
+        "events": ["severe", "tropical", "source", "stream"],
         "minimum_interval_seconds": 30,
         "allow_private_targets": False,
     },
@@ -237,6 +248,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "condition_focus": 10,
         "weather_history": 14,
         "spc_outlook": 13,
+        "tropical_update": 14,
+        "tropical_systems": 16,
+        "tropical_track": 18,
+        "tropical_local": 14,
     },
 }
 
@@ -413,13 +428,17 @@ class ConfigStore:
                 merged["notifications"] = _deep_merge(DEFAULT_SETTINGS["notifications"], raw.get("notifications") or {})
 
             if previous_version < 16:
-                # v0.2.5.1 adds explicit DRM render-node selection. Existing
-                # installations default to Auto so no hard-coded renderD128 is retained.
+                merged["tropical"] = _deep_merge(DEFAULT_SETTINGS["tropical"], raw.get("tropical") or {})
+                merged["channels"] = _deep_merge(DEFAULT_SETTINGS["channels"], raw.get("channels") or {})
+
+            if previous_version < 17:
+                # v0.2.6 incorporates the v0.2.5.1 render-node reliability patch.
+                # Auto avoids carrying forward the old renderD128 assumption.
                 old_video = raw.get("video") if isinstance(raw.get("video"), dict) else {}
                 if "encoder_device" not in old_video:
                     merged["video"]["encoder_device"] = "auto"
 
-            merged["version"] = 16
+            merged["version"] = 17
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -458,7 +477,7 @@ class ConfigStore:
             raise ValueError("settings payload must be an object")
         with self._lock:
             self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
-            self._settings["version"] = 16
+            self._settings["version"] = 17
             self._save_locked()
         return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
 
@@ -469,18 +488,18 @@ class ConfigStore:
             "alert_refresh_seconds", "nws_user_agent", "music", "radar",
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
             "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video",
-            "performance", "custom_profiles", "tts", "notifications",
+            "performance", "custom_profiles", "tts", "notifications", "tropical",
         }
         with self._lock:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications", "tropical"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 16
+            self._settings["version"] = 17
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -587,6 +606,16 @@ class ConfigStore:
             if spc.get("minimum_smart_risk") not in {"TSTM", "MRGL", "SLGT", "ENH", "MDT", "HIGH"}: spc["minimum_smart_risk"] = "MRGL"
             self._settings["spc"] = spc
 
+            tropical = _deep_merge(DEFAULT_SETTINGS["tropical"], self._settings.get("tropical") or {})
+            tropical["enabled"] = bool(tropical.get("enabled", True))
+            tropical["segment_enabled"] = bool(tropical.get("segment_enabled", True))
+            tropical["auto_start"] = bool(tropical.get("auto_start", True))
+            tropical["refresh_seconds"] = _clamp_int(tropical.get("refresh_seconds"), 300, 3600, 600)
+            tropical["activation_radius_miles"] = _clamp_int(tropical.get("activation_radius_miles"), 100, 2000, 750)
+            tropical["gulf_development_threshold"] = _clamp_int(tropical.get("gulf_development_threshold"), 0, 100, 40)
+            tropical["cooldown_seconds"] = _clamp_int(tropical.get("cooldown_seconds"), 0, 86400, 21600)
+            self._settings["tropical"] = tropical
+
             history = self._settings.get("history") or {}
             history["enabled"] = bool(history.get("enabled", True))
             history["retention_days"] = _clamp_int(history.get("retention_days"), 1, 3650, 90)
@@ -616,6 +645,7 @@ class ConfigStore:
             channels["per_zip_enabled"] = bool(channels.get("per_zip_enabled", True))
             channels["radar_enabled"] = bool(channels.get("radar_enabled", True))
             channels["severe_enabled"] = bool(channels.get("severe_enabled", True))
+            channels["tropics_enabled"] = bool(channels.get("tropics_enabled", True))
             channels["max_zip_channels"] = _clamp_int(channels.get("max_zip_channels"), 1, 24, 12)
             if channels.get("streaming_mode") not in {"always_on", "on_demand"}:
                 channels["streaming_mode"] = "on_demand"
@@ -649,8 +679,8 @@ class ConfigStore:
                 if "music_volume" in item: row["music_volume"] = _clamp_float(item.get("music_volume"), 0, 1, 0.30)
                 if item.get("transition") in {"cut", "crossfade", "wipe", "wipe_vertical", "slide_left", "slide_up", "venetian", "dissolve", "pixel_dissolve", "crt_fade"}: row["transition"] = item.get("transition")
                 if item.get("encoder") in {"auto", "software", "nvenc", "qsv", "vaapi"}: row["encoder"] = item.get("encoder")
-                device = str(item.get("encoder_device") or "").strip()
-                if device == "auto" or re.fullmatch(r"/dev/dri/renderD\d+", device): row["encoder_device"] = device
+                encoder_device = str(item.get("encoder_device") or "").strip()
+                if encoder_device == "auto" or re.fullmatch(r"/dev/dri/renderD\d+", encoder_device): row["encoder_device"] = encoder_device
                 if item.get("streaming_mode") in {"always_on", "on_demand"}: row["streaming_mode"] = item.get("streaming_mode")
                 if "output_fps" in item: row["output_fps"] = _clamp_int(item.get("output_fps"), 5, 30, 15)
                 if "content_fps" in item: row["content_fps"] = _clamp_int(item.get("content_fps"), 1, 10, 3)
@@ -678,8 +708,8 @@ class ConfigStore:
             notifications["enabled"] = bool(notifications.get("enabled", False))
             webhook_url = str(notifications.get("webhook_url") or "").strip()[:1000]
             notifications["webhook_url"] = webhook_url if webhook_url.startswith(("http://", "https://")) else ""
-            allowed_events = {"severe", "source", "stream", "settings", "lifecycle", "refresh"}
-            notifications["events"] = [str(x) for x in (notifications.get("events") or []) if str(x) in allowed_events] or ["severe", "source", "stream"]
+            allowed_events = {"severe", "tropical", "source", "stream", "settings", "lifecycle", "refresh"}
+            notifications["events"] = [str(x) for x in (notifications.get("events") or []) if str(x) in allowed_events] or ["severe", "tropical", "source", "stream"]
             notifications["minimum_interval_seconds"] = _clamp_int(notifications.get("minimum_interval_seconds"), 0, 3600, 30)
             notifications["allow_private_targets"] = bool(notifications.get("allow_private_targets", False))
             self._settings["notifications"] = notifications
@@ -688,15 +718,17 @@ class ConfigStore:
                 "station_id", "current", "today", "nws_forecast", "hourly", "precipitation",
                 "radar", "radar_local", "radar_regional", "radar_wide", "seven_day", "regional", "almanac",
                 "alert", "alert_radar", "temperature_trend", "storm_outlook", "regional_map",
-                "condition_focus", "weather_history", "spc_outlook",
+                "condition_focus", "weather_history", "spc_outlook", "tropical_update", "tropical_systems", "tropical_track", "tropical_local",
             }
             channels = self._settings.get("channels") or {}
             local_valid = valid_slides - {"alert", "alert_radar", "radar", "radar_local", "radar_regional", "radar_wide", "regional_map"}
             radar_valid = {"station_id", "radar_local", "radar_regional", "radar_wide", "regional_map", "storm_outlook", "spc_outlook", "current", "alert", "alert_radar"}
             severe_valid = {"station_id", "current", "spc_outlook", "storm_outlook", "radar_local", "radar_regional", "radar_wide", "regional_map", "alert", "alert_radar", "nws_forecast"}
+            tropics_valid = {"station_id", "tropical_update", "tropical_systems", "tropical_track", "tropical_local", "radar_wide", "radar_regional", "regional_map", "current"}
             channels["zip_sequence"] = [x for x in (channels.get("zip_sequence") or []) if x in local_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["zip_sequence"])
             channels["radar_sequence"] = [x for x in (channels.get("radar_sequence") or []) if x in radar_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["radar_sequence"])
             channels["severe_idle_sequence"] = [x for x in (channels.get("severe_idle_sequence") or []) if x in severe_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["severe_idle_sequence"])
+            channels["tropics_sequence"] = [x for x in (channels.get("tropics_sequence") or []) if x in tropics_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["tropics_sequence"])
             self._settings["channels"] = channels
             dayparts = self._settings.get("dayparts") or {}
             sequences = dayparts.get("sequences") if isinstance(dayparts.get("sequences"), dict) else {}

@@ -181,13 +181,14 @@ def draw_weather_icon(draw: ImageDraw.ImageDraw, code: int | None, x: int, y: in
 
 
 class WeatherRenderer:
-    def __init__(self, config_store, weather_manager, radar_manager=None, place_manager=None, history_store=None, spc_manager=None) -> None:
+    def __init__(self, config_store, weather_manager, radar_manager=None, place_manager=None, history_store=None, spc_manager=None, tropical_manager=None) -> None:
         self.config_store = config_store
         self.weather_manager = weather_manager
         self.radar_manager = radar_manager
         self.place_manager = place_manager
         self.history_store = history_store
         self.spc_manager = spc_manager
+        self.tropical_manager = tropical_manager
         self.cycle_started = dt.datetime.now().timestamp()
         self._logo_cache = None
         self._logo_mtime = None
@@ -197,7 +198,7 @@ class WeatherRenderer:
         self._weather_revision = -1
         self._base_settings: dict[str, Any] | None = None
         self._base_weather: dict[str, Any] | None = None
-        self._context_cache: dict[tuple[str | None, str, int, int, int], tuple[dict[str, Any], dict[str, Any]]] = {}
+        self._context_cache: dict[tuple[str | None, str, int, int, int, int], tuple[dict[str, Any], dict[str, Any]]] = {}
         self._context_hits = 0
         self._context_misses = 0
 
@@ -338,6 +339,11 @@ class WeatherRenderer:
             # window. This lets the block finish naturally even after that window.
             wanted = self._smart_wanted(settings, snapshot, now if now is not None else dt.datetime.now().timestamp())
 
+        tropical = settings.get("_tropical") or {}
+        if settings.get("_channel_mode") == "local" and tropical.get("segment_active") and "tropical_update" not in wanted:
+            insert_at = wanted.index("current") + 1 if "current" in wanted else min(1, len(wanted))
+            wanted.insert(insert_at, "tropical_update")
+
         seq = []
         for name in wanted:
             if name == "station_id" and not pres.get("show_station_id", True):
@@ -355,6 +361,8 @@ class WeatherRenderer:
             if name == "spc_outlook" and not (settings.get("spc") or {}).get("enabled", True):
                 continue
             if name == "weather_history" and not (settings.get("history") or {}).get("enabled", True):
+                continue
+            if name.startswith("tropical_") and not (settings.get("tropical") or {}).get("enabled", True):
                 continue
             fallback = durations.get("radar", 16) if name.startswith("radar") or name == "alert_radar" else 10
             seq.append((name, max(3, int(durations.get(name, fallback)))))
@@ -438,6 +446,10 @@ class WeatherRenderer:
         elif name == "precipitation": self._draw_precipitation(draw, w, h, settings, primary, c)
         elif name == "storm_outlook": self._draw_storm_outlook(draw, w, h, settings, snapshot, primary, c)
         elif name == "spc_outlook": self._draw_spc_outlook(draw, w, h, settings, primary, c)
+        elif name == "tropical_update": self._draw_tropical_update(draw, w, h, settings, primary, c)
+        elif name == "tropical_systems": self._draw_tropical_systems(draw, w, h, settings, primary, c)
+        elif name == "tropical_track": self._draw_tropical_track(draw, w, h, settings, primary, c, now)
+        elif name == "tropical_local": self._draw_tropical_local(draw, w, h, settings, primary, c)
         elif name == "condition_focus": self._draw_condition_focus(draw, w, h, settings, primary, c)
         elif name == "weather_history": self._draw_weather_history(draw, w, h, settings, primary, c)
         elif name == "seven_day": self._draw_seven_day(draw, w, h, settings, primary, c)
@@ -454,6 +466,7 @@ class WeatherRenderer:
 
     def _channel_context(self, location_id: str | None = None, channel_mode: str = "local") -> tuple[dict[str, Any], dict[str, Any]]:
         spc_revision = self.spc_manager.revision() if self.spc_manager and hasattr(self.spc_manager, "revision") else 0
+        tropical_revision = self.tropical_manager.revision() if self.tropical_manager and hasattr(self.tropical_manager, "revision") else 0
         with self._context_lock:
             config_revision, changed_settings = self.config_store.snapshot_if_changed(self._config_revision)
             weather_revision, changed_weather = self.weather_manager.snapshot_if_changed(self._weather_revision)
@@ -465,7 +478,7 @@ class WeatherRenderer:
                 self._base_weather = changed_weather
                 self._weather_revision = weather_revision
                 self._context_cache.clear()
-            key = (location_id, channel_mode, config_revision, weather_revision, spc_revision)
+            key = (location_id, channel_mode, config_revision, weather_revision, spc_revision, tropical_revision)
             cached = self._context_cache.get(key)
             if cached is not None:
                 self._context_hits += 1
@@ -509,9 +522,18 @@ class WeatherRenderer:
             settings.setdefault("smart_programming", {})["enabled"] = False
             settings["presentation"]["sequence"] = list(channels.get("severe_idle_sequence") or ["station_id","current","spc_outlook","storm_outlook","radar_local","regional_map","radar_regional"])
             settings["station_slogan"] = "RWN SEVERE WEATHER CENTER • ALERTS • RADAR"
+        elif channel_mode == "tropics":
+            settings.setdefault("presentation", {}).setdefault("scheduled_updates", {})["enabled"] = False
+            settings.setdefault("dayparts", {})["enabled"] = False
+            settings.setdefault("smart_programming", {})["enabled"] = False
+            settings["presentation"]["sequence"] = list(channels.get("tropics_sequence") or ["tropical_update","tropical_systems","tropical_track","tropical_local","radar_wide"])
+            settings["station_slogan"] = "RWN TROPICS WATCH • OFFICIAL NHC DATA • GULF FOCUS"
         settings["_channel_mode"] = channel_mode
         if self.spc_manager:
             settings["_spc_outlook"] = (self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook") or {})
+        if self.tropical_manager:
+            loc = next((x for x in settings.get("locations", []) if x.get("id") == settings.get("_render_location_id")), None)
+            settings["_tropical"] = self.tropical_manager.status(loc, snapshot.get("alerts") or [])
         context = (settings, snapshot)
         with self._context_lock:
             self._context_cache[key] = context
@@ -618,7 +640,7 @@ class WeatherRenderer:
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720)); c = self._theme(settings)
         if not primary:
             out = Image.new("RGB", (w,h), c["bg"]); self._paint_background(out,c,settings,dt.datetime.now().timestamp()); d=ImageDraw.Draw(out); self._draw_setup(d,w,h,settings,c); self._draw_footer(d,w,h,settings,snapshot,c,dt.datetime.now().timestamp()); return out
-        valid = {"station_id","current","condition_focus","today","nws_forecast","temperature_trend","hourly","precipitation","storm_outlook","spc_outlook","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar"}
+        valid = {"station_id","current","condition_focus","today","nws_forecast","temperature_trend","hourly","precipitation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar"}
         if slide_name not in valid: slide_name = "current"
         snap = snapshot
         if test_alert:
@@ -1287,6 +1309,94 @@ class WeatherRenderer:
         d1=outlook.get("day1") or {}; draw.text((w//2,500),f"LOCAL DAY 1 CATEGORY: {d1.get('name','No Categorical Risk').upper()}",font=font(25,bold=True),fill=c["accent"],anchor="mm")
         draw.text((w//2,548),"NOAA / NWS STORM PREDICTION CENTER • CATEGORICAL OUTLOOK",font=font(15,mono=True),fill=c["muted"],anchor="mm")
         draw.text((w//2,575),"OUTLOOK GUIDANCE IS NOT A WARNING • ACTIVE NWS ALERTS TAKE PRIORITY",font=font(13,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_tropical_update(self, draw, w, h, settings, p, c):
+        tropical=settings.get("_tropical") or {}; systems=tropical.get("systems") or []; outlook=tropical.get("outlook") or {}
+        self._header(draw,w,"Tropical Weather Update","Atlantic • Caribbean • Gulf",c)
+        if systems:
+            draw.text((72,142),f"{len(systems)} ACTIVE ATLANTIC SYSTEM{'S' if len(systems)!=1 else ''}",font=font(27,bold=True,mono=True),fill=c["accent"])
+            for idx,storm in enumerate(systems[:3]):
+                x=70+idx*400; round_rect(draw,(x,196,x+370,442),16,c["panel2"],outline=c["muted"],width=2)
+                draw.text((x+185,238),str(storm.get("name") or "SYSTEM").upper(),font=font(31,bold=True),fill=c["title"],anchor="mm")
+                draw.text((x+185,284),str(storm.get("classification_name") or "Tropical Cyclone").upper(),font=font(16,bold=True,mono=True),fill=c["accent"],anchor="mm")
+                draw.text((x+28,337),f"WIND  {safe(storm.get('intensity_mph'))} MPH",font=font(22,bold=True,mono=True),fill=c["text"])
+                draw.text((x+28,380),f"PRESSURE  {safe(storm.get('pressure_mb'))} MB",font=font(19,mono=True),fill=c["muted"])
+                draw.text((x+28,415),f"MOVEMENT  {safe(storm.get('movement_degrees'))}° AT {safe(storm.get('movement_mph'))} MPH",font=font(15,mono=True),fill=c["muted"])
+        else:
+            round_rect(draw,(70,160,w-70,390),18,c["panel2"],outline=c["muted"],width=2)
+            draw.text((w//2,225),"NO ACTIVE ATLANTIC TROPICAL CYCLONES",font=font(34,bold=True),fill=c["accent"],anchor="mm")
+            risk=int(outlook.get("development_max") or 0)
+            draw.text((w//2,294),f"HIGHEST OUTLOOK DEVELOPMENT CHANCE  {risk}%",font=font(23,bold=True,mono=True),fill=c["text"],anchor="mm")
+            draw.text((w//2,346),"WeatherStream continues monitoring official NHC feeds.",font=font(19),fill=c["muted"],anchor="mm")
+        text=str(outlook.get("text") or "Official Atlantic outlook will appear after the next NHC refresh.")
+        summary=" ".join(textwrap.wrap(text,92)[:2])
+        for row,line in enumerate(textwrap.wrap(summary,105)[:2]): draw.text((w//2,500+row*31),line,font=font(17),fill=c["text"],anchor="mm")
+        draw.text((w//2,592),"SOURCE: NOAA NATIONAL HURRICANE CENTER • CHECK OFFICIAL LOCAL INSTRUCTIONS",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_tropical_systems(self, draw, w, h, settings, p, c):
+        tropical=settings.get("_tropical") or {}; systems=tropical.get("systems") or []
+        self._header(draw,w,"Active Tropical Systems","Official NHC Status",c)
+        if not systems:
+            draw.text((w//2,310),"NO ACTIVE ATLANTIC SYSTEMS",font=font(44,bold=True),fill=c["accent"],anchor="mm")
+            draw.text((w//2,375),"The Tropics Watch channel remains ready on demand.",font=font(22),fill=c["text"],anchor="mm"); return
+        for idx,storm in enumerate(systems[:4]):
+            y=132+idx*113; round_rect(draw,(64,y,w-64,y+94),13,c["panel2"],outline=c["muted"],width=2)
+            draw.text((88,y+18),str(storm.get("name") or "SYSTEM").upper(),font=font(28,bold=True),fill=c["title"])
+            draw.text((395,y+22),str(storm.get("classification_name") or "CYCLONE").upper(),font=font(16,bold=True,mono=True),fill=c["accent"])
+            draw.text((88,y+61),f"{safe(storm.get('latitude'))}°, {safe(storm.get('longitude'))}°",font=font(16,mono=True),fill=c["muted"])
+            draw.text((w-88,y+25),f"{safe(storm.get('intensity_mph'))} MPH",font=font(30,bold=True,mono=True),fill=c["text"],anchor="ra")
+            draw.text((w-88,y+65),f"{safe(storm.get('pressure_mb'))} MB  •  MOVING {safe(storm.get('movement_degrees'))}° / {safe(storm.get('movement_mph'))} MPH",font=font(14,mono=True),fill=c["muted"],anchor="ra")
+
+    def _draw_tropical_track(self, draw, w, h, settings, p, c, now):
+        tropical=settings.get("_tropical") or {}; systems=tropical.get("systems") or []
+        storm=systems[int(now//15)%len(systems)] if systems else None
+        self._header(draw,w,"Tropical Forecast Track",str((storm or {}).get("name") or "Atlantic Basin"),c)
+        box=(65,120,w-65,h-105); round_rect(draw,box,15,"#08233a",outline=c["muted"],width=2)
+        x1,y1,x2,y2=box
+        def project(lat,lon): return (x1+(float(lon)+105.0)/60.0*(x2-x1),y2-(float(lat)-5.0)/40.0*(y2-y1))
+        for lon in range(-100,-44,10):
+            x,_=project(5,lon); draw.line((x,y1,x,y2),fill="#17415a",width=1); draw.text((x,y2-15),f"{abs(lon)}W",font=font(11,mono=True),fill=c["muted"],anchor="ms")
+        for lat in range(10,46,10):
+            _,y=project(lat,-105); draw.line((x1,y,x2,y),fill="#17415a",width=1); draw.text((x1+5,y),f"{lat}N",font=font(11,mono=True),fill=c["muted"],anchor="lm")
+        gulf=[project(lat,lon) for lat,lon in [(18,-98.8),(31.8,-98.8),(31.8,-79),(18,-79),(18,-98.8)]]
+        draw.line(gulf,fill="#d0a42e",width=2); draw.text(project(24,-89),"GULF",font=font(14,bold=True,mono=True),fill="#f4c84b",anchor="mm")
+        coast=[project(lat,lon) for lat,lon in [(25,-97),(29,-96),(30,-90),(30,-85),(26,-82),(25,-80),(31,-80),(35,-76),(41,-70)]]
+        draw.line(coast,fill="#8fb6c8",width=3)
+        if not storm:
+            draw.text((w//2,330),"NO ACTIVE NHC FORECAST TRACK",font=font(37,bold=True),fill=c["accent"],anchor="mm"); return
+        points=list(storm.get("track") or [])
+        if storm.get("latitude") is not None and storm.get("longitude") is not None: points.insert(0,[storm["latitude"],storm["longitude"]])
+        plotted=[project(lat,lon) for lat,lon in points if 5<=float(lat)<=45 and -105<=float(lon)<=-45]
+        if len(plotted)>1: draw.line(plotted,fill=c["accent"],width=5,joint="curve")
+        for idx,(x,y) in enumerate(plotted):
+            r=9 if idx==0 else 6; draw.ellipse((x-r,y-r,x+r,y+r),fill="#ffdc4a" if idx==0 else "#ffffff",outline="#081520",width=2)
+        loc=(p or {}).get("location") or {}
+        try:
+            lx,ly=project(float(loc["latitude"]),float(loc["longitude"])); draw.rectangle((lx-6,ly-6,lx+6,ly+6),fill="#55e7ff",outline="#ffffff"); draw.text((lx+11,ly-8),str(loc.get("name") or "LOCAL").upper(),font=font(12,bold=True,mono=True),fill="#ffffff")
+        except Exception: pass
+        draw.text((w//2,h-117),"TRACK POINTS ARE OFFICIAL NHC FORECAST POSITIONS • IMPACTS CAN OCCUR OUTSIDE THE TRACK",font=font(12,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_tropical_local(self, draw, w, h, settings, p, c):
+        tropical=settings.get("_tropical") or {}; activation=tropical.get("activation") or {}; loc=(p or {}).get("location") or {}
+        self._header(draw,w,"Local Tropical Impact Monitor",location_label(loc),c)
+        active=bool(activation.get("active")); color="#ffbf3f" if active else c["accent"]
+        draw.text((w//2,155),"TROPICS WATCH ACTIVE" if active else "NO LOCAL/GULF ACTIVATION TRIGGER",font=font(34,bold=True),fill=color,anchor="mm")
+        nearest=activation.get("nearest") or {}
+        if nearest:
+            round_rect(draw,(75,202,530,352),16,c["panel2"],outline=c["muted"],width=2)
+            draw.text((102,225),"NEAREST FORECAST/CENTER POINT",font=font(15,bold=True,mono=True),fill=c["muted"])
+            draw.text((102,270),str(nearest.get("name") or "SYSTEM").upper(),font=font(31,bold=True),fill=c["title"])
+            draw.text((102,316),f"ABOUT {safe(nearest.get('distance_miles'))} MILES",font=font(24,bold=True,mono=True),fill=c["accent"])
+        reasons=activation.get("reasons") or ["No official NHC/NWS Gulf or local proximity trigger is active."]
+        round_rect(draw,(560,202,w-75,470),16,c["panel2"],outline=c["muted"],width=2)
+        draw.text((590,226),"ACTIVATION BASIS",font=font(16,bold=True,mono=True),fill=c["muted"])
+        y=270
+        for reason in reasons[:4]:
+            for line in textwrap.wrap(str(reason),50)[:2]: draw.text((600,y),line,font=font(18,bold=True),fill=c["text"]); y+=28
+            y+=10
+        draw.text((76,515),"LOCAL WATCHES/WARNINGS COME FROM THE NATIONAL WEATHER SERVICE",font=font(18,bold=True,mono=True),fill=c["accent"])
+        draw.text((76,558),"Follow evacuation and protective-action instructions from local officials.",font=font(20),fill=c["text"])
+        draw.text((76,591),"The forecast track shows center positions, not the full size of hazardous impacts.",font=font(16),fill=c["muted"])
 
     def _draw_seven_day(self, draw, w, h, settings, p, c):
         self._header(draw, w, "7-Day Forecast", location_label(p["location"]), c)
