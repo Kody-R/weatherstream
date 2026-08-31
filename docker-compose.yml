@@ -2,7 +2,7 @@ services:
   weatherstream:
     build: .
     # After publishing to GHCR, replace "build: ." with, for example:
-    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.2.5
+    image: ghcr.io/kody-r/weatherstream:v0.2.5
     container_name: weatherstream
     init: true
     restart: unless-stopped
@@ -16,8 +16,8 @@ services:
       - TZ=America/Chicago
       # Optional but strongly recommended when port 8787 is reachable by other devices.
       # Browser admin pages use HTTP Basic authentication when this is set.
-      # - WEATHERSTREAM_ADMIN_USER=admin
-      # - WEATHERSTREAM_ADMIN_PASSWORD=replace-with-a-long-random-password
+      - WEATHERSTREAM_ADMIN_USER=admin
+      - WEATHERSTREAM_ADMIN_PASSWORD=admin
       # Keep false unless a trusted reverse proxy overwrites X-Forwarded-For.
       - WEATHERSTREAM_TRUST_PROXY_HEADERS=false
       # Bound local Piper CPU concurrency and queued narration work.
