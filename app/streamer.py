@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.observability import observability
+
 LIVE_DIR = Path(os.environ.get("WEATHERSTREAM_LIVE", "/tmp/weatherstream/live"))
 MUSIC_DIR = Path(os.environ.get("WEATHERSTREAM_MUSIC", "/music"))
 PREVIEW_PATH = Path(os.environ.get("WEATHERSTREAM_PREVIEW", "/tmp/weatherstream/preview.jpg"))
@@ -76,6 +78,7 @@ class ChannelWorker:
         self._restart = threading.Event()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
+        self._lifecycle_lock = threading.RLock()
         self.last_error: str | None = None
         self.started_at: float | None = None
         self.last_chime_alert_id: str | None = None
@@ -105,6 +108,24 @@ class ChannelWorker:
         self.last_idle_at: float | None = None
         self.activation_count = 0
 
+        # v0.2.2.1 Local on the 8s state. This is a real programming block owned
+        # by the channel worker instead of a clock-selected alternate renderer
+        # sequence. The video and announcement threads coordinate through this lock.
+        self._local8_lock = threading.RLock()
+        self._local8_active = False
+        self._local8_block_id: str | None = None
+        self._local8_phases: list[str] = []
+        self._local8_phase_index = 0
+        self._local8_phase_started_mono: float | None = None
+        self._local8_phase_text = ""
+        self._local8_phase_token = 0
+        self._local8_audio_queued = False
+        self._local8_audio_started_mono: float | None = None
+        self._local8_audio_duration = 0.0
+        self._local8_last_handled_block_id: str | None = None
+        self._local8_last_abort_reason: str | None = None
+        self._local8_next_context_check = 0.0
+
     @property
     def spec(self) -> tuple[str, str, str]:
         return (self.key, self.location_id, self.mode)
@@ -112,36 +133,47 @@ class ChannelWorker:
     def start(self) -> None:
         """Start this channel encoder if it is not already active.
 
-        v0.2.2 workers are reusable: an on-demand worker can stop after its idle
+        v0.2.2.1 workers are reusable: an on-demand worker can stop after its idle
         timeout and later be started again by a new HLS playlist request.
         """
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.preview_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._thread and self._thread.is_alive():
-            if not self._stop.is_set():
-                return
-            self._thread.join(timeout=4.0)
-            if self._thread.is_alive():
-                return
-        self._stop.clear()
-        self._restart.clear()
-        self._media_sequence = None
-        self._latest_segment = None
-        self._playlist_mtime = None
-        self._hls_prev_seq = None
-        self._hls_prev_time = None
-        self._realtime_ratio = None
-        # Remove stale HLS before returning control to an on-demand request.
-        self._clean_live()
-        self.activation_count += 1
-        self._thread = threading.Thread(target=self._run, name=f"stream-{self.key}", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.preview_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._thread and self._thread.is_alive():
+                if not self._stop.is_set():
+                    return
+                self._thread.join(timeout=4.0)
+                if self._thread.is_alive():
+                    return
+            self._stop.clear()
+            self._restart.clear()
+            self._media_sequence = None
+            self._latest_segment = None
+            self._playlist_mtime = None
+            self._hls_prev_seq = None
+            self._hls_prev_time = None
+            self._realtime_ratio = None
+            # Remove stale HLS before returning control to an on-demand request.
+            self._clean_live()
+            self.activation_count += 1
+            self._thread = threading.Thread(target=self._run, name=f"stream-{self.key}", daemon=True)
+            self._thread.start()
+            observability.event("stream", "Channel encoder starting", channel=self.key, mode=self.mode, activation=self.activation_count)
 
     def stop(self, idle: bool = False) -> None:
-        self._stop.set()
-        if idle:
-            self.last_idle_at = time.time()
-        self._terminate_process()
+        with self._lifecycle_lock:
+            was_active = self.thread_active()
+            self._stop.set()
+            if idle:
+                self.last_idle_at = time.time()
+            self._terminate_process()
+            if was_active:
+                observability.event("stream", "Channel encoder stopped", channel=self.key, mode=self.mode, reason="idle timeout" if idle else "stop requested")
+
+    def join(self, timeout: float = 5.0) -> None:
+        thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, timeout))
 
     def note_viewer_activity(self) -> None:
         self.last_viewer_activity = time.time()
@@ -157,6 +189,7 @@ class ChannelWorker:
             self._last_recovery_at = time.time()
         self._restart.set()
         self._terminate_process()
+        observability.event("stream", "Channel encoder restart requested", channel=self.key, mode=self.mode, reason=reason, recovery=recovery)
 
     def _channel_override(self, settings: dict[str, Any]) -> dict[str, Any]:
         overrides = ((settings.get("channels") or {}).get("overrides") or {})
@@ -193,6 +226,225 @@ class ChannelWorker:
         if self._adaptive_degraded:
             runtime["performance_degraded"] = True
         return runtime
+
+    def _local8_cfg(self, settings: dict[str, Any]) -> dict[str, Any]:
+        return (((settings.get("presentation") or {}).get("scheduled_updates") or {}))
+
+    def _local8_phase_min_seconds(self, phase: str, settings: dict[str, Any]) -> float:
+        if phase == "intro":
+            return 4.0
+        slides = settings.get("slides") or {}
+        fallback = 16 if phase == "radar_local" else 10
+        try:
+            return float(max(3, min(60, int(slides.get(phase, fallback)))))
+        except Exception:
+            return float(fallback)
+
+    def _local8_prepare_phase(self, settings: dict[str, Any], primary: dict[str, Any], mono: float) -> None:
+        with self._local8_lock:
+            if not self._local8_active or not self._local8_phases:
+                return
+            phase = self._local8_phases[self._local8_phase_index]
+            self._local8_phase_started_mono = mono
+            self._local8_phase_token += 1
+            self._local8_audio_queued = False
+            self._local8_audio_started_mono = None
+            self._local8_audio_duration = 0.0
+            self._local8_phase_text = self.tts_manager.local_on_8s_phase_text(phase, primary, settings)
+
+    def _start_local8(self, block_id: str, settings: dict[str, Any], primary: dict[str, Any], mono: float) -> None:
+        cfg = self._local8_cfg(settings)
+        allowed = {"current", "today", "hourly", "radar_local", "seven_day"}
+        phases = [str(x) for x in (cfg.get("sequence") or []) if str(x) in allowed]
+        if not phases:
+            phases = ["current", "today", "hourly", "radar_local", "seven_day"]
+        if bool(cfg.get("intro_enabled", True)):
+            phases.insert(0, "intro")
+        with self._local8_lock:
+            self._local8_active = True
+            self._local8_block_id = str(block_id)
+            self._local8_phases = phases
+            self._local8_phase_index = 0
+            self._local8_last_abort_reason = None
+        self._local8_prepare_phase(settings, primary, mono)
+
+    def _abort_local8(self, reason: str = "preempted") -> None:
+        with self._local8_lock:
+            if not self._local8_active:
+                return
+            # Mark the interrupted block handled so clearing a severe warning does
+            # not restart the same :08/:18/... block mid-window.
+            self._local8_last_handled_block_id = self._local8_block_id
+            self.last_tts_local_block_id = self._local8_block_id
+            self._local8_last_abort_reason = reason
+            self._local8_active = False
+            self._local8_phases = []
+            self._local8_phase_text = ""
+            self._local8_audio_queued = False
+            self._local8_audio_started_mono = None
+            self._local8_audio_duration = 0.0
+
+    def _finish_local8(self) -> None:
+        with self._local8_lock:
+            block_id = self._local8_block_id
+            self._local8_last_handled_block_id = block_id
+            self.last_tts_local_block_id = block_id
+            self._local8_active = False
+            self._local8_phases = []
+            self._local8_phase_text = ""
+            self._local8_audio_queued = False
+            self._local8_audio_started_mono = None
+            self._local8_audio_duration = 0.0
+
+    def _advance_local8_phase(self, settings: dict[str, Any], primary: dict[str, Any], mono: float) -> None:
+        with self._local8_lock:
+            if not self._local8_active:
+                return
+            next_index = self._local8_phase_index + 1
+            if next_index >= len(self._local8_phases):
+                finish = True
+            else:
+                self._local8_phase_index = next_index
+                finish = False
+        if finish:
+            self._finish_local8()
+        else:
+            self._local8_prepare_phase(settings, primary, mono)
+
+    def _local8_tick(self, now_wall: float) -> dict[str, Any]:
+        """Advance/trigger the Local on the 8s block and return renderer overrides."""
+        if self.mode != "local":
+            return {}
+        mono = time.monotonic()
+        context = None
+        # Trigger/severe checks need not run at video frame rate. The renderer data
+        # itself remains live, while this control check runs about twice per second.
+        if mono >= self._local8_next_context_check:
+            context = self.renderer.narration_context_for(self.location_id, "local", now_wall)
+            self._local8_next_context_check = mono + 0.5
+            if context.get("takeover_alert"):
+                self._abort_local8("severe weather takeover")
+            else:
+                settings = context.get("settings") or self._effective_settings(self.config_store.get())
+                cfg = self._local8_cfg(settings)
+                block_id = context.get("scheduled_block_id")
+                with self._local8_lock:
+                    active = self._local8_active
+                    handled = self._local8_last_handled_block_id
+                if bool(cfg.get("enabled", False)) and context.get("scheduled_update_active") and block_id and not active and block_id != handled:
+                    self._start_local8(str(block_id), settings, context.get("primary") or {}, mono)
+
+        with self._local8_lock:
+            if not self._local8_active or not self._local8_phases:
+                return {}
+            phase = self._local8_phases[self._local8_phase_index]
+            phase_index = self._local8_phase_index
+            phase_count = len(self._local8_phases)
+            phase_started = self._local8_phase_started_mono or mono
+            audio_queued = self._local8_audio_queued
+            audio_started = self._local8_audio_started_mono
+            audio_duration = self._local8_audio_duration
+
+        # Use fresh settings only when a block is active; this keeps the hot normal
+        # video path from re-copying configuration solely for scheduler bookkeeping.
+        settings = (context or self.renderer.narration_context_for(self.location_id, "local", now_wall)).get("settings") or self._effective_settings(self.config_store.get())
+        cfg = self._local8_cfg(settings)
+        elapsed = max(0.0, mono - phase_started)
+        minimum = self._local8_phase_min_seconds(phase, settings)
+        tts_cfg = settings.get("tts") or {}
+        narration_expected = bool(tts_cfg.get("enabled", False) and tts_cfg.get("local_on_8s", True) and self._local8_phase_text)
+        tail = max(0.0, min(5.0, float(cfg.get("phase_tail_seconds", 1.0))))
+        wait = max(3.0, min(45.0, float(cfg.get("tts_wait_seconds", 15))))
+        max_phase = max(15.0, min(120.0, float(cfg.get("max_phase_seconds", 75))))
+        advance = False
+        if narration_expected:
+            if audio_queued and audio_started is not None:
+                required = max(minimum, (audio_started - phase_started) + audio_duration + tail)
+                advance = elapsed >= required
+            elif elapsed >= max(minimum, wait):
+                # A missing voice/synthesis failure must never wedge a live channel.
+                advance = True
+        else:
+            advance = elapsed >= minimum
+        if not audio_queued and elapsed >= max_phase:
+            advance = True
+
+        if advance:
+            fresh = self.renderer.narration_context_for(self.location_id, "local", now_wall)
+            self._advance_local8_phase(fresh.get("settings") or settings, fresh.get("primary") or {}, mono)
+            with self._local8_lock:
+                if not self._local8_active or not self._local8_phases:
+                    return {}
+                phase = self._local8_phases[self._local8_phase_index]
+                phase_index = self._local8_phase_index
+                phase_count = len(self._local8_phases)
+                phase_started = self._local8_phase_started_mono or mono
+                elapsed = max(0.0, mono - phase_started)
+                minimum = self._local8_phase_min_seconds(phase, fresh.get("settings") or settings)
+
+        slide = "local8_intro" if phase == "intro" else phase
+        return {
+            "local8_active": True,
+            "local8_phase": phase,
+            "local8_phase_index": phase_index,
+            "local8_phase_count": phase_count,
+            "force_slide": slide,
+            "force_progress": min(1.0, elapsed / max(0.1, minimum)),
+        }
+
+    def _local8_audio_snapshot(self) -> dict[str, Any]:
+        with self._local8_lock:
+            if not self._local8_active or not self._local8_phases:
+                return {"active": False}
+            return {
+                "active": True,
+                "block_id": self._local8_block_id,
+                "phase": self._local8_phases[self._local8_phase_index],
+                "phase_index": self._local8_phase_index,
+                "phase_count": len(self._local8_phases),
+                "phase_started_mono": self._local8_phase_started_mono,
+                "phase_text": self._local8_phase_text,
+                "phase_token": self._local8_phase_token,
+                "audio_queued": self._local8_audio_queued,
+            }
+
+    def _mark_local8_audio_queued(self, token: int, duration: float) -> bool:
+        with self._local8_lock:
+            if not self._local8_active or token != self._local8_phase_token or self._local8_audio_queued:
+                return False
+            self._local8_audio_queued = True
+            self._local8_audio_started_mono = time.monotonic()
+            self._local8_audio_duration = max(0.0, float(duration))
+            return True
+
+    def _local8_status(self) -> dict[str, Any]:
+        with self._local8_lock:
+            phase = self._local8_phases[self._local8_phase_index] if self._local8_active and self._local8_phases else None
+            elapsed = (time.monotonic() - self._local8_phase_started_mono) if self._local8_active and self._local8_phase_started_mono else None
+            return {
+                "active": self._local8_active,
+                "block_id": self._local8_block_id if self._local8_active else None,
+                "phase": phase,
+                "phase_index": self._local8_phase_index + 1 if phase else None,
+                "phase_count": len(self._local8_phases) if self._local8_active else 0,
+                "phase_elapsed_seconds": round(elapsed, 2) if elapsed is not None else None,
+                "narration_queued": self._local8_audio_queued if self._local8_active else False,
+                "last_completed_or_handled_block": self._local8_last_handled_block_id,
+                "last_abort_reason": self._local8_last_abort_reason,
+            }
+
+    def start_local8_test(self) -> bool:
+        """Start one complete Local on the 8s block immediately for testing."""
+        if self.mode != "local":
+            return False
+        context = self.renderer.narration_context_for(self.location_id, "local", time.time())
+        if context.get("takeover_alert"):
+            return False
+        settings = context.get("settings") or self._effective_settings(self.config_store.get())
+        block_id = f"TEST-{int(time.time())}"
+        self._start_local8(block_id, settings, context.get("primary") or {}, time.monotonic())
+        self.note_viewer_activity()
+        return True
 
     def _maybe_adapt(self, settings: dict[str, Any]) -> None:
         perf = settings.get("performance") or {}
@@ -269,6 +521,7 @@ class ChannelWorker:
             "last_chime_alert_id": self.last_chime_alert_id,
             "last_tts_alert_id": self.last_tts_alert_id,
             "last_tts_local_block_id": self.last_tts_local_block_id,
+            "local_on_8s": self._local8_status(),
             "encoder": self._active_encoder,
             "requested_encoder": str(video.get("encoder", "software")),
             "adaptive_state": "DEGRADED" if self._adaptive_degraded else "NORMAL",
@@ -454,19 +707,20 @@ class ChannelWorker:
         return samples.tobytes()
 
     def _alert_audio_loop(self, write_fd: int, proc: subprocess.Popen) -> None:
-        """Feed the auxiliary PCM bus with chimes and tightly-scoped narration.
+        """Feed chimes and narration into the auxiliary PCM announcement bus.
 
-        v0.2.2 TTS is intentionally restricted to two situations:
-        1) one concise forecast narration per Local on the 8s scheduled block, and
-        2) one narration per new qualifying severe-weather takeover alert.
-        All synthesis happens on background threads inside TTSManager; this loop
-        never stops feeding PCM while Piper is working.
+        Local on the 8s narration is phase-aware in v0.2.2.1: the current phase
+        remains on screen while its exact screen-derived sentence is synthesized
+        and spoken. A qualifying severe alert immediately preempts any remaining
+        Local on the 8s audio and owns the bus.
         """
-        chunk_frames = 2205
+        chunk_frames = 2205  # 50 ms at 44.1 kHz
         silence = b"\x00\x00\x00\x00" * chunk_frames
         gap = b"\x00\x00\x00\x00" * int(44100 * 0.30)
+        bytes_per_second = 44100 * 2 * 2
         raw_chime = self._make_chime()
         pending = b""
+        pending_kind: str | None = None
         last_chime_signature = self.last_chime_alert_id
         next_check = 0.0
         try:
@@ -480,9 +734,19 @@ class ChannelWorker:
                         active = self.renderer.takeover_alert_for(self.location_id)
                         signature = str(active.get("id") or active.get("headline") or active.get("event")) if active else None
 
+                        if active:
+                            # Severe weather is the highest-priority programming and
+                            # audio state. Stop a Local on the 8s sentence at the next
+                            # 50 ms PCM chunk rather than letting it finish first.
+                            self._abort_local8("severe weather takeover")
+                            if pending_kind == "local8":
+                                pending = b""
+                                pending_kind = None
+
                         if active and bool(alerts_cfg.get("chime_enabled", True)) and signature != last_chime_signature:
                             chime = self._scale_pcm(raw_chime, float(alerts_cfg.get("chime_volume", 0.65)))
                             pending += chime
+                            pending_kind = "severe"
                             last_chime_signature = signature
                             self.last_chime_alert_id = signature
 
@@ -496,26 +760,34 @@ class ChannelWorker:
                             speech = self.tts_manager.request_pcm(text, settings, "severe")
                             if speech:
                                 pending += gap + speech
+                                pending_kind = "severe"
                                 self.last_tts_alert_id = signature
 
-                        # Local narration only belongs to the scheduled Local on the
-                        # 8s block. A severe takeover always wins and suppresses it.
                         if (
                             not active
                             and self.mode == "local"
                             and bool(tts_cfg.get("enabled", False))
                             and bool(tts_cfg.get("local_on_8s", True))
+                            and not pending
                         ):
-                            context = self.renderer.narration_context_for(self.location_id, "local", time.time())
-                            block_id = context.get("scheduled_block_id")
-                            if context.get("scheduled_update_active") and block_id and block_id != self.last_tts_local_block_id:
-                                text = self.tts_manager.local_on_8s_text(context.get("primary") or {}, settings)
-                                speech = self.tts_manager.request_pcm(text, settings, "local_on_8s")
-                                if speech:
-                                    pending += speech
-                                    self.last_tts_local_block_id = str(block_id)
+                            state = self._local8_audio_snapshot()
+                            if state.get("active") and not state.get("audio_queued"):
+                                phase_started = state.get("phase_started_mono")
+                                cfg = self._local8_cfg(settings)
+                                lead = max(0.0, min(3.0, float(cfg.get("phase_lead_seconds", 0.8))))
+                                if phase_started is not None and mono - float(phase_started) >= lead:
+                                    text = str(state.get("phase_text") or "").strip()
+                                    if text:
+                                        phase = str(state.get("phase") or "phase")
+                                        token = int(state.get("phase_token") or 0)
+                                        speech = self.tts_manager.request_pcm(text, settings, f"local8_{phase}")
+                                        if speech:
+                                            duration = len(speech) / float(bytes_per_second)
+                                            if self._mark_local8_audio_queued(token, duration):
+                                                pending = speech
+                                                pending_kind = "local8"
 
-                        next_check = mono + 1.0
+                        next_check = mono + 0.5
 
                     need = len(silence)
                     if pending:
@@ -523,6 +795,8 @@ class ChannelWorker:
                         pending = pending[need:]
                         if len(block) < need:
                             block += silence[:need-len(block)]
+                        if not pending:
+                            pending_kind = None
                     else:
                         block = silence
                     try:
@@ -576,7 +850,10 @@ class ChannelWorker:
                         effective_content_fps = max(1, min(content_fps, int((settings.get("performance") or {}).get("adaptive_content_fps", 2))))
                     content_interval = 1.0 / effective_content_fps
                     if frame_bytes is None or tick >= next_content:
-                        started=time.perf_counter(); now=time.time(); image=self.renderer.render_channel(now, self.location_id, self.mode, runtime_overrides=self._runtime_render_overrides(settings)); frame_bytes=image.tobytes()
+                        started=time.perf_counter(); now=time.time()
+                        runtime = self._runtime_render_overrides(settings)
+                        runtime.update(self._local8_tick(now))
+                        image=self.renderer.render_channel(now, self.location_id, self.mode, runtime_overrides=runtime); frame_bytes=image.tobytes()
                         self._frames_rendered += 1; self._render_seconds_total += time.perf_counter()-started
                         next_content = tick + content_interval
                     if self._process.stdin is None:
@@ -614,7 +891,7 @@ class ChannelWorker:
 
 
 class Streamer:
-    """v0.2.2 multi-channel supervisor with optional on-demand encoders.
+    """v0.2.2.1 multi-channel supervisor with optional on-demand encoders.
 
     Data services remain continuously available. Channel workers are kept in a
     catalog, but an on-demand worker only starts its Pillow/FFmpeg pipeline when
@@ -649,6 +926,11 @@ class Streamer:
             workers = list(self._workers.values())
         for worker in workers:
             worker.stop()
+        for worker in workers:
+            worker.join(timeout=5.0)
+        thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
 
     def request_restart(self, reason: str = "manual") -> None:
         """Restart active workers only; idle on-demand channels remain idle."""
@@ -674,6 +956,13 @@ class Streamer:
                 worker.start()
         self._wake.set()
         return True
+
+    def start_local8_test(self, key: str) -> bool:
+        """Activate a Local channel if needed and start its test block."""
+        worker = self.activate_channel(key)
+        if worker is None or worker.mode != "local":
+            return False
+        return worker.start_local8_test()
 
     def stop_channel(self, key: str) -> bool:
         """Manually stop an on-demand channel. Always-on channels reject this."""
@@ -794,10 +1083,15 @@ class Streamer:
                         worker.start()
                         running = True
                     elif lifecycle == "on_demand" and running and not severe_active:
-                        last_activity = worker.last_viewer_activity or worker.started_at or now
-                        if now - last_activity >= idle_timeout:
-                            worker.stop(idle=True)
-                            continue
+                        # A manually/scheduled Local on the 8s block is active
+                        # programming, even if no player has requested a segment in
+                        # the last few seconds. Never idle-stop it mid-narration.
+                        local8_active = bool((worker._local8_status() or {}).get("active"))
+                        if not local8_active:
+                            last_activity = worker.last_viewer_activity or worker.started_at or now
+                            if now - last_activity >= idle_timeout:
+                                worker.stop(idle=True)
+                                continue
 
                     if not running:
                         continue

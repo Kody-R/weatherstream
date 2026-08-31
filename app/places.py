@@ -42,6 +42,7 @@ class PlaceManager:
         self._cities: list[dict[str, Any]] = []
         self._last_update: float | None = None
         self._last_error: str | None = None
+        self._client = httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.2.5"}, limits=httpx.Limits(max_connections=4, max_keepalive_connections=2))
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_cache()
 
@@ -54,6 +55,9 @@ class PlaceManager:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5.0)
+        self._client.close()
 
     def request_refresh(self) -> None:
         self._wake.set()
@@ -128,10 +132,10 @@ class PlaceManager:
 
     def _refresh(self) -> None:
         settings = self.config_store.get()
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.2 (Roller Weather Network local weather display)"
-        with httpx.Client(timeout=45.0, follow_redirects=True, headers={"User-Agent": ua}) as client:
-            resp = client.get(GEONAMES_CITIES_URL)
-            resp.raise_for_status()
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.5 (Roller Weather Network local weather display)"
+        self._client.headers["User-Agent"] = ua
+        resp = self._client.get(GEONAMES_CITIES_URL, timeout=45.0)
+        resp.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             name = next((n for n in zf.namelist() if n.endswith(".txt")), None)
             if not name:

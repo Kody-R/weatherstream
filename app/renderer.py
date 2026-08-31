@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import copy
 import math
+import threading
 from functools import lru_cache
 import textwrap
 from pathlib import Path
@@ -51,6 +53,19 @@ def font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.FreeTyp
         return ImageFont.truetype(path, size)
     except Exception:
         return ImageFont.load_default()
+
+
+@lru_cache(maxsize=192)
+def _cached_pattern_mask(width: int, height: int, alpha_bucket: int, block: int) -> Image.Image:
+    sw, sh = max(1, (width + block - 1) // block), max(1, (height + block - 1) // block)
+    mask = Image.new("L", (sw, sh), 0)
+    pix = mask.load()
+    threshold = max(0, min(64, alpha_bucket)) * 10000 // 64
+    for y in range(sh):
+        for x in range(sw):
+            value = ((x * 92821) ^ (y * 68917) ^ ((x + y) * 31337)) % 10000
+            pix[x, y] = 255 if value < threshold else 0
+    return mask.resize((width, height), Image.Resampling.NEAREST)
 
 
 def safe(value: Any, default: str = "--") -> str:
@@ -176,6 +191,15 @@ class WeatherRenderer:
         self.cycle_started = dt.datetime.now().timestamp()
         self._logo_cache = None
         self._logo_mtime = None
+        self._logo_scaled_cache: dict[tuple[Any, int, int], Image.Image] = {}
+        self._context_lock = threading.RLock()
+        self._config_revision = -1
+        self._weather_revision = -1
+        self._base_settings: dict[str, Any] | None = None
+        self._base_weather: dict[str, Any] | None = None
+        self._context_cache: dict[tuple[str | None, str, int, int, int], tuple[dict[str, Any], dict[str, Any]]] = {}
+        self._context_hits = 0
+        self._context_misses = 0
 
     def _theme(self, settings: dict[str, Any]) -> dict[str, str]:
         return THEMES.get(settings.get("theme", "local-90s"), THEMES["local-90s"])
@@ -273,7 +297,7 @@ class WeatherRenderer:
         rain = self._max_next(hourly, "precipitation_probability", 12)
         storm_hourly = ((snapshot.get("storm_guidance") or {}).get("hourly") or {})
         storm = self._max_next(storm_hourly, "thunderstorm_probability", 12)
-        spc = self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook", {}) if self.spc_manager else {}
+        spc = settings.get("_spc_outlook") or {}
         rank = int(((spc.get("day1") or {}).get("rank")) or 0)
         min_risk = {"TSTM":1,"MRGL":2,"SLGT":3,"ENH":4,"MDT":5,"HIGH":6}.get((settings.get("spc") or {}).get("minimum_smart_risk", "MRGL"), 2)
         if rain < int(smart.get("rain_threshold", 20)):
@@ -307,11 +331,11 @@ class WeatherRenderer:
             wanted = (settings.get("alerts", {}) or {}).get("takeover_sequence") or [
                 "alert", "alert_radar", "current", "nws_forecast", "alert_radar"
             ]
-        elif now is not None and self._scheduled_update_elapsed(settings, snapshot, now) is not None:
-            wanted = ((pres.get("scheduled_updates") or {}).get("sequence") or [
-                "station_id", "current", "radar_local", "today", "seven_day"
-            ])
         else:
+            # v0.2.2.1 Local on the 8s is driven by ChannelWorker as a dedicated
+            # programming block. The normal renderer timeline no longer swaps its
+            # sequence merely because the clock is inside the scheduled trigger
+            # window. This lets the block finish naturally even after that window.
             wanted = self._smart_wanted(settings, snapshot, now if now is not None else dt.datetime.now().timestamp())
 
         seq = []
@@ -340,10 +364,9 @@ class WeatherRenderer:
         return seq or [("current", 12)]
 
     def _timeline(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float):
-        scheduled_elapsed = self._scheduled_update_elapsed(settings, snapshot, now)
         seq = self._sequence(settings, snapshot, now)
         total = sum(d for _, d in seq)
-        offset = (scheduled_elapsed if scheduled_elapsed is not None else (now - self.cycle_started)) % max(1, total)
+        offset = (now - self.cycle_started) % max(1, total)
         cursor = 0.0
         for idx, (name, duration) in enumerate(seq):
             if offset < cursor + duration:
@@ -403,7 +426,9 @@ class WeatherRenderer:
         img = Image.new("RGB", (w, h), c["bg"])
         self._paint_background(img, c, settings, now)
         draw = ImageDraw.Draw(img)
-        if name == "station_id":
+        if name == "local8_intro":
+            self._draw_local8_intro(draw, w, h, settings, primary, c)
+        elif name == "station_id":
             self._draw_station_id(draw, w, h, settings, primary, c, now)
         elif name == "current": self._draw_current(draw, w, h, settings, primary, c)
         elif name == "today": self._draw_today(draw, w, h, settings, primary, c)
@@ -428,17 +453,33 @@ class WeatherRenderer:
         return img
 
     def _channel_context(self, location_id: str | None = None, channel_mode: str = "local") -> tuple[dict[str, Any], dict[str, Any]]:
-        # ConfigStore.get() already returns an isolated deep copy; avoid copying it a second time on every video frame.
-        settings = self.config_store.get()
+        spc_revision = self.spc_manager.revision() if self.spc_manager and hasattr(self.spc_manager, "revision") else 0
+        with self._context_lock:
+            config_revision, changed_settings = self.config_store.snapshot_if_changed(self._config_revision)
+            weather_revision, changed_weather = self.weather_manager.snapshot_if_changed(self._weather_revision)
+            if changed_settings is not None:
+                self._base_settings = changed_settings
+                self._config_revision = config_revision
+                self._context_cache.clear()
+            if changed_weather is not None:
+                self._base_weather = changed_weather
+                self._weather_revision = weather_revision
+                self._context_cache.clear()
+            key = (location_id, channel_mode, config_revision, weather_revision, spc_revision)
+            cached = self._context_cache.get(key)
+            if cached is not None:
+                self._context_hits += 1
+                return cached
+            self._context_misses += 1
+            settings = copy.deepcopy(self._base_settings or {})
+            base_snapshot = self._base_weather or {}
+            snapshot = dict(base_snapshot)
         if location_id:
             settings["primary_location_id"] = location_id
             settings["_render_location_id"] = location_id
-            if hasattr(self.weather_manager, "snapshot_for"):
-                snapshot = self.weather_manager.snapshot_for(location_id)
-            else:
-                snapshot = self.weather_manager.snapshot()
+            snapshot["alerts"] = (base_snapshot.get("alerts_by_location") or {}).get(location_id) or []
+            snapshot["storm_guidance"] = (base_snapshot.get("storm_guidance_by_location") or {}).get(location_id) or {}
         else:
-            snapshot = self.weather_manager.snapshot()
             settings["_render_location_id"] = settings.get("primary_location_id")
 
         channels = settings.get("channels") or {}
@@ -469,7 +510,18 @@ class WeatherRenderer:
             settings["presentation"]["sequence"] = list(channels.get("severe_idle_sequence") or ["station_id","current","spc_outlook","storm_outlook","radar_local","regional_map","radar_regional"])
             settings["station_slogan"] = "RWN SEVERE WEATHER CENTER • ALERTS • RADAR"
         settings["_channel_mode"] = channel_mode
-        return settings, snapshot
+        if self.spc_manager:
+            settings["_spc_outlook"] = (self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook") or {})
+        context = (settings, snapshot)
+        with self._context_lock:
+            self._context_cache[key] = context
+            if len(self._context_cache) > 96:
+                self._context_cache.pop(next(iter(self._context_cache)))
+        return context
+
+    def context_cache_status(self) -> dict[str, int]:
+        with self._context_lock:
+            return {"entries": len(self._context_cache), "hits": self._context_hits, "misses": self._context_misses, "config_revision": self._config_revision, "weather_revision": self._weather_revision}
 
     def takeover_alert_for(self, location_id: str | None = None) -> dict[str, Any] | None:
         settings, snapshot = self._channel_context(location_id, "local")
@@ -501,8 +553,14 @@ class WeatherRenderer:
 
     def render_channel(self, now: float | None = None, location_id: str | None = None, channel_mode: str = "local", runtime_overrides: dict[str, Any] | None = None) -> Image.Image:
         now = now or dt.datetime.now().timestamp()
-        settings, snapshot = self._channel_context(location_id, channel_mode)
+        base_settings, snapshot = self._channel_context(location_id, channel_mode)
         overrides = runtime_overrides or {}
+        settings = base_settings
+        if overrides:
+            settings = dict(base_settings)
+            presentation = dict(base_settings.get("presentation") or {})
+            presentation["retro_effects"] = dict(presentation.get("retro_effects") or {})
+            settings["presentation"] = presentation
         if overrides.get("theme"):
             settings["theme"] = overrides["theme"]
         if "transition" in overrides:
@@ -514,6 +572,9 @@ class WeatherRenderer:
             if perf.get("adaptive_disable_retro", True):
                 settings.setdefault("presentation", {}).setdefault("retro_effects", {})["enabled"] = False
             settings.setdefault("presentation", {})["transition"] = perf.get("adaptive_transition", "cut")
+        if overrides.get("local8_active"):
+            settings["_local8_active"] = True
+            settings["_local8_phase"] = str(overrides.get("local8_phase") or "")
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720))
         c = self._theme(settings)
         primary = self._primary(settings, snapshot)
@@ -521,6 +582,14 @@ class WeatherRenderer:
             out = Image.new("RGB", (w, h), c["bg"]); self._paint_background(out, c, settings, now)
             draw = ImageDraw.Draw(out); self._draw_setup(draw, w, h, settings, c); self._draw_footer(draw, w, h, settings, snapshot, c, now)
             return self._apply_retro_effects(out, settings, now)
+
+        forced_name = str(overrides.get("force_slide") or "").strip()
+        if forced_name:
+            # Dedicated programming blocks supply their exact phase. Deliberately
+            # bypass the normal timeline/transitions so audio and picture cannot
+            # drift onto different phases while Piper is speaking.
+            progress = max(0.0, min(1.0, float(overrides.get("force_progress", 0.0))))
+            return self._apply_retro_effects(self._render_slide(forced_name, settings, snapshot, primary, now, progress), settings, now)
 
         seq, idx, name, progress, elapsed, duration = self._timeline(settings, snapshot, now)
         current = self._render_slide(name, settings, snapshot, primary, now, progress)
@@ -564,16 +633,8 @@ class WeatherRenderer:
 
     def _pattern_mask(self, size: tuple[int, int], alpha: float, block: int) -> Image.Image:
         w, h = size
-        sw, sh = max(1, (w + block - 1) // block), max(1, (h + block - 1) // block)
-        mask = Image.new("L", (sw, sh), 0)
-        pix = mask.load()
-        threshold = int(max(0.0, min(1.0, alpha)) * 10000)
-        for y in range(sh):
-            for x in range(sw):
-                # Deterministic pseudo-random field: stable between adjacent render frames.
-                v = ((x * 92821) ^ (y * 68917) ^ ((x+y) * 31337)) % 10000
-                pix[x, y] = 255 if v < threshold else 0
-        return mask.resize((w, h), Image.Resampling.NEAREST)
+        bucket = int(round(max(0.0, min(1.0, alpha)) * 64))
+        return _cached_pattern_mask(w, h, bucket, max(1, block))
 
     def _transition(self, a: Image.Image, b: Image.Image, alpha: float, kind: str) -> Image.Image:
         alpha = max(0.0, min(1.0, alpha))
@@ -713,6 +774,22 @@ class WeatherRenderer:
             draw.text((w-34, 28), subtitle, font=font(22, bold=True, mono=True), fill=c["muted"], anchor="ra")
             draw.line((0, 86, w, 86), fill=c["accent"], width=2)
 
+    def _draw_local8_intro(self, draw, w, h, settings, p, c):
+        """Dedicated Local on the 8s opening card.
+
+        Keep the card intentionally sparse so the phase narration can be derived
+        directly from the visible text without inventing off-screen weather copy.
+        """
+        loc = p.get("location") or {}
+        station = settings.get("station_name", "Roller Weather Network")
+        place = location_label(loc)
+        draw.rectangle((0, 0, w, 16), fill=c["accent"])
+        draw.text((w//2, 142), "LOCAL ON THE 8s", font=font(66, bold=True), fill=c["title"], anchor="mm")
+        draw.line((250, 198, w-250, 198), fill=c["accent"], width=3)
+        draw.text((w//2, 264), place.upper(), font=font(38, bold=True, mono=True), fill=c["accent"], anchor="mm")
+        draw.text((w//2, 356), station.upper(), font=font(32, bold=True), fill=c["text"], anchor="mm")
+        draw.text((w//2, 430), "YOUR LOCAL FORECAST STARTS NOW", font=font(23, bold=True, mono=True), fill=c["muted"], anchor="mm")
+
     def _draw_station_id(self, draw, w, h, settings, p, c, now):
         loc = p.get("location", {})
         cur = p.get("current", {})
@@ -745,7 +822,8 @@ class WeatherRenderer:
             if self._logo_cache is None or self._logo_mtime != cache_key:
                 self._logo_cache = Image.open(path).convert("RGBA")
                 self._logo_mtime = cache_key
-            return self._logo_cache.copy()
+                self._logo_scaled_cache.clear()
+            return self._logo_cache
         except Exception:
             self._logo_cache = None; self._logo_mtime = None
             return None
@@ -762,8 +840,13 @@ class WeatherRenderer:
             return
         max_w = max(64, min(320, int(cfg.get("logo_max_width", 170))))
         max_h = 92 if slide_name != "station_id" else 150
-        scale = min(max_w / max(1, logo.width), max_h / max(1, logo.height), 1.0)
-        logo = logo.resize((max(1, int(logo.width*scale)), max(1, int(logo.height*scale))), Image.Resampling.LANCZOS)
+        scaled_key = (self._logo_mtime, max_w, max_h)
+        scaled = self._logo_scaled_cache.get(scaled_key)
+        if scaled is None:
+            scale = min(max_w / max(1, logo.width), max_h / max(1, logo.height), 1.0)
+            scaled = logo.resize((max(1, int(logo.width*scale)), max(1, int(logo.height*scale))), Image.Resampling.LANCZOS)
+            self._logo_scaled_cache[scaled_key] = scaled
+        logo = scaled
         if slide_name == "station_id":
             x, y = 48, 96
         elif position == "top_left":
@@ -905,12 +988,14 @@ class WeatherRenderer:
         self._header(draw,w,"Regional Weather Map",location_label(p["location"]),c)
         map_box=(54,112,w-54,h-108)
         round_rect(draw,(map_box[0]-7,map_box[1]-7,map_box[2]+7,map_box[3]+7),12,c["panel2"],outline=c["muted"],width=2)
-        base=self.radar_manager.map_snapshot(view) if self.radar_manager else None
+        target_w, target_h = map_box[2]-map_box[0], map_box[3]-map_box[1]
+        base=self.radar_manager.resized_map(view, target_w, target_h) if self.radar_manager and hasattr(self.radar_manager, "resized_map") else self.radar_manager.map_snapshot(view, copy_image=False) if self.radar_manager else None
         if base is None:
             draw.text((w//2,330),"REGIONAL MAP IS LOADING",font=font(36,bold=True),fill=c["accent"],anchor="mm")
             draw.text((w//2,385),"It will appear after the first map/radar refresh.",font=font(20),fill=c["muted"],anchor="mm")
             return
-        base=base.resize((map_box[2]-map_box[0],map_box[3]-map_box[1]),Image.Resampling.LANCZOS)
+        if base.size != (target_w, target_h):
+            base=base.resize((target_w,target_h),Image.Resampling.LANCZOS)
         img.paste(base,(map_box[0],map_box[1])); draw=ImageDraw.Draw(img)
         zoom=int(((settings.get("radar") or {}).get("views") or {}).get(view,{}).get("zoom",6))
         center=p.get("location") or {}
@@ -1187,7 +1272,7 @@ class WeatherRenderer:
 
     def _draw_spc_outlook(self, draw, w, h, settings, p, c):
         self._header(draw,w,"SPC SEVERE WEATHER OUTLOOK",location_label(p.get("location") or {}),c)
-        outlook=self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook",{}) if self.spc_manager else {}
+        outlook=settings.get("_spc_outlook") or {}
         risk_colors={"NONE":"#6d7b85","TSTM":"#4ca65b","MRGL":"#4e9e64","SLGT":"#d4c83a","ENH":"#e18a31","MDT":"#c94c58","HIGH":"#c05aa5"}
         if not outlook:
             draw.text((w//2,320),"SPC OUTLOOK UNAVAILABLE",font=font(38,bold=True),fill=c["accent"],anchor="mm"); draw.text((w//2,370),"WeatherStream will retry the NOAA outlook service automatically.",font=font(20),fill=c["text"],anchor="mm"); return
@@ -1257,7 +1342,7 @@ class WeatherRenderer:
             self._header(draw, w, "Severe Weather Radar", alert.get("event", "WEATHER ALERT").upper(), c)
         else:
             self._header(draw, w, view_titles.get(view, "Local Radar"), location_label(loc), c)
-        radar = self.radar_manager.snapshot(view) if self.radar_manager else {"frames": [], "last_error": "Radar manager unavailable"}
+        radar = self.radar_manager.snapshot(view, copy_images=False) if self.radar_manager else {"frames": [], "last_error": "Radar manager unavailable"}
         frames = radar.get("frames") or []
         radar_cfg = settings.get("radar", {})
         view_cfg = (radar_cfg.get("views") or {}).get(view) or {}
@@ -1268,7 +1353,8 @@ class WeatherRenderer:
             frame_seconds = float(radar_cfg.get("frame_seconds", 0.8))
             idx = int(now / max(0.25, frame_seconds)) % len(frames)
             frame = frames[idx]
-            radar_img = frame["image"].resize((map_box[2]-map_box[0], map_box[3]-map_box[1]), Image.Resampling.LANCZOS)
+            target_w, target_h = map_box[2]-map_box[0], map_box[3]-map_box[1]
+            radar_img = self.radar_manager.resized_frame(view, frame, target_w, target_h) if self.radar_manager and hasattr(self.radar_manager, "resized_frame") else frame["image"].resize((target_w, target_h), Image.Resampling.LANCZOS)
             img.paste(radar_img, (map_box[0], map_box[1]))
             draw = ImageDraw.Draw(img)
 
@@ -1510,7 +1596,7 @@ class WeatherRenderer:
             parts.append(f"CURRENT  {loc.get('name','LOCAL')} {n(cur.get('temperature_2m'),0,'°')}  {cur.get('description','')}")
             precip=self._max_next(hourly,"precipitation_probability",12)
             if precip >= int((settings.get("smart_programming") or {}).get("rain_threshold",20)): parts.append(f"RAIN CHANCE  UP TO {precip:.0f}% NEXT 12 HOURS")
-            spc=self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook",{}) if self.spc_manager else {}; day1=spc.get("day1") or {}
+            spc=settings.get("_spc_outlook") or {}; day1=spc.get("day1") or {}
             if int(day1.get("rank") or 0)>=2: parts.append(f"SPC OUTLOOK  {day1.get('name','').upper()}")
             highs=daily.get("temperature_2m_max") or []; lows=daily.get("temperature_2m_min") or []
             if highs and lows: parts.append(f"TODAY  HIGH {n(highs[0],0,'°')}  LOW {n(lows[0],0,'°')}")
@@ -1559,12 +1645,11 @@ class WeatherRenderer:
         draw.text((bug_w//2, ticker_top+54), bug_station, font=font(15, bold=True, mono=True), fill=c["text"], anchor="mm")
         if callsign:
             draw.text((bug_w//2, ticker_top+73), station[:28], font=font(11, mono=True), fill=c["muted"], anchor="mm")
-        if self.scheduled_update_active(settings, snapshot, now) and not self._is_takeover_active(settings, snapshot):
-            draw.rectangle((bug_w-70, ticker_top+4, bug_w-5, ticker_top+20), fill=c["accent"])
-            draw.text((bug_w-37, ticker_top+12), "LOCAL", font=font(9, bold=True, mono=True), fill=c["panel2"], anchor="mm")
+        if bool(settings.get("_local8_active")) and not self._is_takeover_active(settings, snapshot):
+            draw.rectangle((bug_w-88, ticker_top+4, bug_w-5, ticker_top+20), fill=c["accent"])
+            draw.text((bug_w-46, ticker_top+12), "LOCAL 8s", font=font(9, bold=True, mono=True), fill=c["panel2"], anchor="mm")
         lid = settings.get("_render_location_id") or settings.get("primary_location_id")
         weather_state = ((((snapshot.get("location_status") or {}).get(lid) or {}).get("weather") or {}).get("state"))
         if weather_state == "cached":
             draw.rectangle((5, ticker_top+4, 78, ticker_top+20), fill="#b36b18")
             draw.text((41, ticker_top+12), "CACHED", font=font(9, bold=True, mono=True), fill="#ffffff", anchor="mm")
-

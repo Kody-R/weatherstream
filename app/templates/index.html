@@ -9,7 +9,7 @@
 <body>
   <main class="shell">
     <header class="topbar">
-      <div><div class="eyebrow">WEATHERSTREAM v0.2.2</div><h1>Roller Weather Network</h1></div>
+      <div><div class="eyebrow">WEATHERSTREAM v0.2.5</div><h1>Roller Weather Network</h1></div>
       <a class="button" href="/admin">Open Admin</a>
     </header>
 
@@ -21,8 +21,8 @@
     <section class="grid two">
       <article class="card">
         <h2>Jellyfin / IPTV endpoints</h2>
-        <label>M3U tuner URL</label><code id="m3uUrl"></code>
-        <label>XMLTV guide URL</label><code id="xmltvUrl"></code>
+        <label>M3U tuner URL</label><div class="copy-row"><code id="m3uUrl"></code><button class="button mini ghost" onclick="copyElement('m3uUrl',this)">Copy</button></div>
+        <label>XMLTV guide URL</label><div class="copy-row"><code id="xmltvUrl"></code><button class="button mini ghost" onclick="copyElement('xmltvUrl',this)">Copy</button></div>
         <p class="hint top-gap">The M3U automatically contains one Local channel per configured ZIP plus RWN Radar and RWN Severe Weather.</p>
       </article>
       <article class="card"><h2>System status</h2><div class="status-grid" id="statusGrid"></div></article>
@@ -37,6 +37,14 @@
 const base=window.location.origin;
 document.getElementById('m3uUrl').textContent=base+'/playlist.m3u';
 document.getElementById('xmltvUrl').textContent=base+'/guide.xml';
+async function copyText(value, button) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(value);
+    else { const area=document.createElement('textarea'); area.value=value; area.style.position='fixed'; area.style.opacity='0'; document.body.appendChild(area); area.select(); document.execCommand('copy'); area.remove(); }
+    const old=button.textContent; button.textContent='Copied'; setTimeout(()=>button.textContent=old,1200);
+  } catch(e) { button.textContent='Copy failed'; }
+}
+function copyElement(id,button){ copyText(document.getElementById(id).textContent,button); }
 setInterval(()=>{document.getElementById('preview').src='/preview.jpg?t='+Date.now();},5000);
 async function refreshStatus(){
   try{
@@ -55,7 +63,7 @@ async function refreshStatus(){
       <div><span>RWN Severe</span><strong>${s.severe_weather?.takeover_active?'ACTIVE':'Standby'}</strong></div>
       <div><span>Radar</span><strong>${s.radar?.frames_loaded?'Ready':'Loading'}</strong></div>
       <div><span>SPC ZIPs</span><strong>${s.spc?.locations_loaded||0}</strong></div>`;
-    channelList.innerHTML=(c.channels||[]).map(ch=>`<div class="location-row"><div><strong>${ch.name}</strong><span>${ch.postal_code?ch.postal_code+' • ':''}${ch.mode.toUpperCase()}</span><code>${ch.url}</code></div><div class="row-actions"><span class="pill ${ch.running?'ok':''}">${ch.running?'ON AIR':(ch.lifecycle_state||'IDLE').replace('_',' ')}</span></div></div>`).join('')||'<div class="empty">Add a ZIP code in Admin to start RWN channels.</div>';
+    channelList.innerHTML=(c.channels||[]).map((ch,index)=>`<div class="location-row"><div><strong>${ch.name}</strong><span>${ch.postal_code?ch.postal_code+' • ':''}${ch.mode.toUpperCase()}</span><div class="copy-row"><code id="channelUrl${index}">${ch.url}</code><button class="button mini ghost" onclick="copyElement('channelUrl${index}',this)">Copy URL</button></div></div><div class="row-actions"><span class="pill ${ch.running?'ok':''}">${ch.running?'ON AIR':(ch.lifecycle_state||'IDLE').replace('_',' ')}</span></div></div>`).join('')||'<div class="empty">Add a ZIP code in Admin to start RWN channels.</div>';
   }catch(e){}
 }
 refreshStatus();setInterval(refreshStatus,5000);

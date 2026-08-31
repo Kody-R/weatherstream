@@ -21,6 +21,7 @@ class CacheManager:
 
     def stop(self) -> None:
         self._stop.set(); self._wake.set()
+        if self._thread and self._thread is not threading.current_thread(): self._thread.join(timeout=5.0)
 
     def request_cleanup(self) -> None: self._wake.set()
 

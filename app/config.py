@@ -12,7 +12,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 13,
+    "version": 15,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -101,7 +101,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.2.2 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.2.5 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -171,6 +171,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "adaptive_content_fps": 2,
     },
     "custom_profiles": {},
+    "notifications": {
+        "enabled": False,
+        "webhook_url": "",
+        "events": ["severe", "source", "stream"],
+        "minimum_interval_seconds": 30,
+        "allow_private_targets": False,
+    },
     "presentation": {
         "transition": "crossfade",
         "transition_seconds": 0.75,
@@ -190,8 +197,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "scheduled_updates": {
             "enabled": False,
             "minute_marks": [8, 18, 28, 38, 48, 58],
+            # In v0.2.2.1 this is a trigger grace period, not the duration of the
+            # Local on the 8s block. Once started, the block runs every phase to
+            # completion unless a qualifying severe-weather takeover preempts it.
             "window_seconds": 120,
-            "sequence": ["station_id", "current", "radar_local", "today", "seven_day"],
+            "intro_enabled": True,
+            "phase_lead_seconds": 0.8,
+            "phase_tail_seconds": 1.0,
+            "tts_wait_seconds": 15,
+            "max_phase_seconds": 75,
+            "sequence": ["current", "today", "hourly", "radar_local", "seven_day"],
         },
         "sequence": [
             "station_id", "current", "condition_focus", "today", "nws_forecast", "temperature_trend", "hourly", "precipitation",
@@ -251,6 +266,7 @@ def _clamp_float(value: Any, lo: float, hi: float, default: float) -> float:
 class ConfigStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._revision = 0
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if not SETTINGS_PATH.exists():
             self._settings = copy.deepcopy(DEFAULT_SETTINGS)
@@ -381,7 +397,20 @@ class ConfigStore:
                 # so existing channels keep their exact audio behavior until enabled.
                 merged["tts"] = _deep_merge(DEFAULT_SETTINGS["tts"], raw.get("tts") or {})
 
-            merged["version"] = 13
+            if previous_version < 14:
+                # v0.2.2.1 turns Local on the 8s into a real programming block.
+                # The old default included a generic station ID and had no hourly
+                # phase. Replace only that untouched default; custom phase choices
+                # are retained where they map to a supported Local on the 8s phase.
+                old_scheduled = ((raw.get("presentation") or {}).get("scheduled_updates") or {})
+                old_seq = old_scheduled.get("sequence") if isinstance(old_scheduled, dict) else None
+                if old_seq == ["station_id", "current", "radar_local", "today", "seven_day"]:
+                    merged["presentation"]["scheduled_updates"]["sequence"] = copy.deepcopy(DEFAULT_SETTINGS["presentation"]["scheduled_updates"]["sequence"])
+
+            if previous_version < 15:
+                merged["notifications"] = _deep_merge(DEFAULT_SETTINGS["notifications"], raw.get("notifications") or {})
+
+            merged["version"] = 15
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -391,10 +420,23 @@ class ConfigStore:
         with tmp.open("w", encoding="utf-8") as fh:
             json.dump(self._settings, fh, indent=2)
         tmp.replace(SETTINGS_PATH)
+        self._revision += 1
 
     def get(self) -> dict[str, Any]:
         with self._lock:
             return copy.deepcopy(self._settings)
+
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
+
+    def snapshot_if_changed(self, previous_revision: int | None = None) -> tuple[int, dict[str, Any] | None]:
+        """Return one isolated settings snapshot only when the revision changed."""
+        with self._lock:
+            revision = self._revision
+            if previous_revision == revision:
+                return revision, None
+            return revision, copy.deepcopy(self._settings)
 
     def reload(self) -> dict[str, Any]:
         with self._lock:
@@ -407,7 +449,7 @@ class ConfigStore:
             raise ValueError("settings payload must be an object")
         with self._lock:
             self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
-            self._settings["version"] = 13
+            self._settings["version"] = 15
             self._save_locked()
         return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
 
@@ -418,18 +460,18 @@ class ConfigStore:
             "alert_refresh_seconds", "nws_user_agent", "music", "radar",
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
             "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video",
-            "performance", "custom_profiles", "tts",
+            "performance", "custom_profiles", "tts", "notifications",
         }
         with self._lock:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 13
+            self._settings["version"] = 15
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -617,6 +659,16 @@ class ConfigStore:
 
             self._settings["custom_profiles"] = self._settings.get("custom_profiles") if isinstance(self._settings.get("custom_profiles"), dict) else {}
 
+            notifications = _deep_merge(DEFAULT_SETTINGS["notifications"], self._settings.get("notifications") or {})
+            notifications["enabled"] = bool(notifications.get("enabled", False))
+            webhook_url = str(notifications.get("webhook_url") or "").strip()[:1000]
+            notifications["webhook_url"] = webhook_url if webhook_url.startswith(("http://", "https://")) else ""
+            allowed_events = {"severe", "source", "stream", "settings", "lifecycle", "refresh"}
+            notifications["events"] = [str(x) for x in (notifications.get("events") or []) if str(x) in allowed_events] or ["severe", "source", "stream"]
+            notifications["minimum_interval_seconds"] = _clamp_int(notifications.get("minimum_interval_seconds"), 0, 3600, 30)
+            notifications["allow_private_targets"] = bool(notifications.get("allow_private_targets", False))
+            self._settings["notifications"] = notifications
+
             valid_slides = {
                 "station_id", "current", "today", "nws_forecast", "hourly", "precipitation",
                 "radar", "radar_local", "radar_regional", "radar_wide", "seven_day", "regional", "almanac",
@@ -669,7 +721,16 @@ class ConfigStore:
                     clean_marks.append(m)
             scheduled["minute_marks"] = sorted(clean_marks)[:12] or [8, 18, 28, 38, 48, 58]
             scheduled["window_seconds"] = _clamp_int(scheduled.get("window_seconds"), 30, 300, 120)
-            schedule_seq = [x for x in scheduled.get("sequence", []) if x in valid_slides - {"alert", "alert_radar"}]
+            scheduled["intro_enabled"] = bool(scheduled.get("intro_enabled", True))
+            scheduled["phase_lead_seconds"] = _clamp_float(scheduled.get("phase_lead_seconds"), 0.0, 3.0, 0.8)
+            scheduled["phase_tail_seconds"] = _clamp_float(scheduled.get("phase_tail_seconds"), 0.0, 5.0, 1.0)
+            scheduled["tts_wait_seconds"] = _clamp_int(scheduled.get("tts_wait_seconds"), 3, 45, 15)
+            scheduled["max_phase_seconds"] = _clamp_int(scheduled.get("max_phase_seconds"), 15, 120, 75)
+            # Local on the 8s is a purpose-built block in v0.2.2.1. Keep its
+            # configurable phase list intentionally small so each phase has a
+            # screen-accurate narration contract.
+            local8_valid = {"current", "today", "hourly", "radar_local", "seven_day"}
+            schedule_seq = [x for x in scheduled.get("sequence", []) if x in local8_valid]
             scheduled["sequence"] = schedule_seq or copy.deepcopy(DEFAULT_SETTINGS["presentation"]["scheduled_updates"]["sequence"])
             pres["scheduled_updates"] = scheduled
 

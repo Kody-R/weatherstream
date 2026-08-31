@@ -5,6 +5,7 @@ import math
 import os
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,9 @@ class RadarManager:
         self._last_update: float | None = None
         self._last_error: str | None = None
         self._view_errors: dict[str, str | None] = {name: None for name in VIEW_NAMES}
+        self._resized_frame_cache: dict[tuple[str, int, int, int], Image.Image] = {}
+        self._resized_map_cache: dict[tuple[str, int, int, int], Image.Image] = {}
+        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.2.5"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
         CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
@@ -78,25 +82,60 @@ class RadarManager:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5.0)
+        self._client.close()
 
     def request_refresh(self) -> None:
         self._wake.set()
 
-    def snapshot(self, view: str = "local") -> dict[str, Any]:
+    def snapshot(self, view: str = "local", copy_images: bool = True) -> dict[str, Any]:
         view = view if view in VIEW_NAMES else "local"
         with self._lock:
+            frames = self._frames.get(view, [])
             return {
                 "view": view,
-                "frames": [{"time": f["time"], "image": f["image"].copy()} for f in self._frames.get(view, [])],
+                "frames": [{"time": f["time"], "image": f["image"].copy() if copy_images else f["image"]} for f in frames],
                 "last_update": self._last_update,
                 "last_error": self._view_errors.get(view) or self._last_error,
             }
 
-    def map_snapshot(self, view: str = "regional") -> Image.Image | None:
+    def map_snapshot(self, view: str = "regional", copy_image: bool = True) -> Image.Image | None:
         view = view if view in VIEW_NAMES else "regional"
         with self._lock:
             image = self._basemaps.get(view)
-            return image.copy() if image is not None else None
+            return image.copy() if image is not None and copy_image else image
+
+    def resized_frame(self, view: str, frame: dict[str, Any], width: int, height: int) -> Image.Image:
+        """Return a read-only target-size radar frame shared by active channels."""
+        key = (view if view in VIEW_NAMES else "local", int(frame.get("time") or 0), int(width), int(height))
+        with self._lock:
+            cached = self._resized_frame_cache.get(key)
+        if cached is not None:
+            return cached
+        image = frame["image"].resize((width, height), Image.Resampling.LANCZOS)
+        with self._lock:
+            existing = self._resized_frame_cache.setdefault(key, image)
+            if len(self._resized_frame_cache) > 96:
+                self._resized_frame_cache.pop(next(iter(self._resized_frame_cache)))
+            return existing
+
+    def resized_map(self, view: str, width: int, height: int) -> Image.Image | None:
+        view = view if view in VIEW_NAMES else "regional"
+        with self._lock:
+            source = self._basemaps.get(view)
+            if source is None:
+                return None
+            key = (view, id(source), int(width), int(height))
+            cached = self._resized_map_cache.get(key)
+        if cached is not None:
+            return cached
+        image = source.resize((width, height), Image.Resampling.LANCZOS)
+        with self._lock:
+            existing = self._resized_map_cache.setdefault(key, image)
+            if len(self._resized_map_cache) > 24:
+                self._resized_map_cache.pop(next(iter(self._resized_map_cache)))
+            return existing
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -159,9 +198,11 @@ class RadarManager:
         default_zoom = {"local": 7, "regional": 6, "wide": 5}[view]
         zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.2 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.5 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
-        with httpx.Client(timeout=18.0, follow_redirects=True, headers=headers) as client:
+        client = self._client
+        client.headers.update(headers)
+        with nullcontext(client) as client:
             base = self._build_basemap(client, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
             if radar.get("show_boundaries", True):
                 boundaries = self._build_boundary_overlay(
@@ -187,10 +228,12 @@ class RadarManager:
         radar = settings.get("radar", {})
         frame_count = max(3, min(12, int(radar.get("frame_count", 8))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.2 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.5 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
 
-        with httpx.Client(timeout=18.0, follow_redirects=True, headers=headers) as client:
+        client = self._client
+        client.headers.update(headers)
+        with nullcontext(client) as client:
             meta_resp = client.get(RAINVIEWER_META)
             meta_resp.raise_for_status()
             meta = meta_resp.json()

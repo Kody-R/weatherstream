@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import httpx
+
+from app.observability import observability
 
 OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
@@ -59,7 +63,7 @@ def resolve_zip(postal_code: str) -> dict[str, Any]:
         }
 
 
-def fetch_forecast(location: dict[str, Any]) -> dict[str, Any]:
+def fetch_forecast(location: dict[str, Any], client: httpx.Client | None = None) -> dict[str, Any]:
     params = {
         "latitude": location["latitude"],
         "longitude": location["longitude"],
@@ -84,10 +88,15 @@ def fetch_forecast(location: dict[str, Any]) -> dict[str, Any]:
             "daylight_duration", "sunshine_duration", "uv_index_max",
         ]),
     }
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        response = client.get(OPEN_METEO_FORECAST, params=params)
+    owned = client is None
+    client = client or httpx.Client(timeout=15.0, follow_redirects=True)
+    try:
+        response = client.get(OPEN_METEO_FORECAST, params=params, timeout=15.0)
         response.raise_for_status()
         data = response.json()
+    finally:
+        if owned:
+            client.close()
 
     current = data.get("current", {})
     current["description"] = describe_weather(current.get("weather_code"))
@@ -104,7 +113,7 @@ def fetch_forecast(location: dict[str, Any]) -> dict[str, Any]:
 
 
 
-def fetch_storm_guidance(location: dict[str, Any]) -> dict[str, Any]:
+def fetch_storm_guidance(location: dict[str, Any], client: httpx.Client | None = None) -> dict[str, Any]:
     """Fetch NOAA-model thunderstorm guidance via Open-Meteo's GFS/NBM API.
 
     This is forecast guidance, not observed lightning-strike data. WeatherStream
@@ -121,10 +130,15 @@ def fetch_storm_guidance(location: dict[str, Any]) -> dict[str, Any]:
             "precipitation_probability", "wind_gusts_10m",
         ]),
     }
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        response = client.get(OPEN_METEO_GFS, params=params)
+    owned = client is None
+    client = client or httpx.Client(timeout=15.0, follow_redirects=True)
+    try:
+        response = client.get(OPEN_METEO_GFS, params=params, timeout=15.0)
         response.raise_for_status()
         data = response.json()
+    finally:
+        if owned:
+            client.close()
     return {
         "hourly": data.get("hourly", {}),
         "timezone": data.get("timezone", location.get("timezone", "")),
@@ -133,24 +147,29 @@ def fetch_storm_guidance(location: dict[str, Any]) -> dict[str, Any]:
         "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
 
-def fetch_nws_forecast(location: dict[str, Any], user_agent: str) -> dict[str, Any]:
+def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.2.2 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.2.5 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     lat = float(location["latitude"])
     lon = float(location["longitude"])
-    with httpx.Client(timeout=12.0, follow_redirects=True, headers=headers) as client:
-        point_resp = client.get(NWS_POINTS.format(lat=f"{lat:.4f}", lon=f"{lon:.4f}"))
+    owned = client is None
+    client = client or httpx.Client(timeout=12.0, follow_redirects=True)
+    try:
+        point_resp = client.get(NWS_POINTS.format(lat=f"{lat:.4f}", lon=f"{lon:.4f}"), headers=headers, timeout=12.0)
         point_resp.raise_for_status()
         props = point_resp.json().get("properties") or {}
         forecast_url = props.get("forecast")
         if not forecast_url:
             raise RuntimeError("NWS points response did not include a forecast link.")
-        forecast_resp = client.get(forecast_url)
+        forecast_resp = client.get(forecast_url, headers=headers, timeout=12.0)
         forecast_resp.raise_for_status()
         forecast_props = forecast_resp.json().get("properties") or {}
         periods = forecast_props.get("periods") or []
+    finally:
+        if owned:
+            client.close()
     clean_periods = []
     for p in periods[:14]:
         clean_periods.append({
@@ -174,16 +193,21 @@ def fetch_nws_forecast(location: dict[str, Any], user_agent: str) -> dict[str, A
     }
 
 
-def fetch_alerts(location: dict[str, Any], user_agent: str) -> list[dict[str, Any]]:
+def fetch_alerts(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> list[dict[str, Any]]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.2.2 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.2.5 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     point = f"{float(location['latitude']):.4f},{float(location['longitude']):.4f}"
-    with httpx.Client(timeout=12.0, follow_redirects=True, headers=headers) as client:
-        response = client.get(NWS_ALERTS, params={"point": point})
+    owned = client is None
+    client = client or httpx.Client(timeout=12.0, follow_redirects=True)
+    try:
+        response = client.get(NWS_ALERTS, params={"point": point}, headers=headers, timeout=12.0)
         response.raise_for_status()
         features = response.json().get("features") or []
+    finally:
+        if owned:
+            client.close()
 
     alerts: list[dict[str, Any]] = []
     for item in features:
@@ -225,6 +249,15 @@ class WeatherManager:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        self._revision = 0
+        workers = max(1, min(8, int(os.environ.get("WEATHERSTREAM_REFRESH_WORKERS", "4"))))
+        self._refresh_workers = workers
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="weather-refresh")
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(18.0, connect=8.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=max(8, workers * 3), max_keepalive_connections=max(4, workers * 2), keepalive_expiry=30.0),
+        )
         self._snapshot: dict[str, Any] = {
             "locations": {},
             "alerts": [],
@@ -247,6 +280,10 @@ class WeatherManager:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5.0)
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._client.close()
 
     def request_refresh(self) -> None:
         self._wake.set()
@@ -254,6 +291,25 @@ class WeatherManager:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return copy.deepcopy(self._snapshot)
+
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
+
+    def performance_status(self) -> dict[str, int]:
+        with self._lock:
+            return {"revision": self._revision, "refresh_workers": self._refresh_workers}
+
+    def snapshot_if_changed(self, previous_revision: int | None = None) -> tuple[int, dict[str, Any] | None]:
+        """Copy the published weather state only when a renderer needs a new revision."""
+        with self._lock:
+            revision = self._revision
+            if previous_revision == revision:
+                return revision, None
+            return revision, copy.deepcopy(self._snapshot)
+
+    def _changed_locked(self) -> None:
+        self._revision += 1
 
     def snapshot_for(self, location_id: str | None) -> dict[str, Any]:
         """Return a normal renderer snapshot with per-location aliases selected."""
@@ -266,12 +322,17 @@ class WeatherManager:
 
     def _set_error(self, exc: Exception | None) -> None:
         with self._lock:
-            self._snapshot["last_error"] = str(exc) if exc else None
+            value = str(exc) if exc else None
+            if self._snapshot.get("last_error") != value:
+                self._snapshot["last_error"] = value
+                self._changed_locked()
 
     def _mark_source(self, name: str, ok: bool, error: str | None = None) -> None:
         stamp = dt.datetime.now(dt.timezone.utc).isoformat()
+        previous_error: str | None = None
         with self._lock:
             current = copy.deepcopy((self._snapshot.get("sources") or {}).get(name) or {})
+            previous_error = current.get("last_error")
             current["last_attempt"] = stamp
             if ok:
                 current["last_success"] = stamp
@@ -279,6 +340,12 @@ class WeatherManager:
             else:
                 current["last_error"] = error or "Unknown error"
             self._snapshot.setdefault("sources", {})[name] = current
+            self._changed_locked()
+        next_error = None if ok else (error or "Unknown error")
+        if next_error and next_error != previous_error:
+            observability.event("source", f"{name} source unavailable", source=name, state="error", error=next_error[:500])
+        elif ok and previous_error:
+            observability.event("source", f"{name} source recovered", source=name, state="recovered")
 
     def _set_location_status(self, location_id: str, section: str, *, ok: bool, error: str | None = None, cached: bool = False) -> None:
         stamp = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -296,6 +363,7 @@ class WeatherManager:
                 info["state"] = "cached" if cached else "unavailable"
             row[section] = info
             self._snapshot.setdefault("location_status", {})[location_id] = row
+            self._changed_locked()
 
     def _run(self) -> None:
         next_weather = 0.0
@@ -336,6 +404,7 @@ class WeatherManager:
             with self._lock:
                 self._snapshot["locations"] = {}
                 self._snapshot["last_weather_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                self._changed_locked()
             return
 
         with self._lock:
@@ -344,28 +413,32 @@ class WeatherManager:
         errors: list[str] = []
         open_ok = 0
         nws_ok = 0
+        history_pending: list[tuple[str, dict[str, Any], None]] = []
 
-        for location in locations:
+        def fetch_location(location: dict[str, Any]):
             lid = location["id"]
+            weather_ok = False
+            nws_success = False
+            weather_error = None
             try:
-                data = fetch_forecast(location)
-                open_ok += 1
+                data = fetch_forecast(location, self._client)
+                weather_ok = True
                 self._set_location_status(lid, "weather", ok=True)
             except Exception as exc:
                 cached = previous_locations.get(lid)
-                errors.append(f"{location.get('postal_code')}: weather: {exc}")
+                weather_error = f"{location.get('postal_code')}: weather: {exc}"
                 self._set_location_status(lid, "weather", ok=False, error=str(exc), cached=bool(cached))
                 if cached:
                     data = copy.deepcopy(cached)
                     data["stale"] = True
                     data["stale_reason"] = str(exc)
                 else:
-                    continue
+                    return lid, None, weather_ok, nws_success, weather_error
 
             # Every ZIP gets an NWS narrative forecast in v0.1.8.1.
             try:
-                data["nws"] = fetch_nws_forecast(location, settings.get("nws_user_agent", ""))
-                nws_ok += 1
+                data["nws"] = fetch_nws_forecast(location, settings.get("nws_user_agent", ""), self._client)
+                nws_success = True
                 self._set_location_status(lid, "nws_forecast", ok=True)
             except Exception as exc:
                 previous_nws = (previous_locations.get(lid) or {}).get("nws") or {}
@@ -376,21 +449,31 @@ class WeatherManager:
                 else:
                     data["nws"] = {"periods": [], "office": "", "error": str(exc)}
                 self._set_location_status(lid, "nws_forecast", ok=False, error=str(exc), cached=bool(previous_nws.get("periods")))
+            return lid, data, weather_ok, nws_success, weather_error
 
+        futures = [self._executor.submit(fetch_location, location) for location in locations]
+        for future in as_completed(futures):
+            lid, data, weather_success, nws_success, weather_error = future.result()
+            if weather_error:
+                errors.append(weather_error)
+            open_ok += int(weather_success)
+            nws_ok += int(nws_success)
+            if data is None:
+                continue
             new_locations[lid] = data
             if self.history_store and (settings.get("history") or {}).get("enabled", True):
-                try:
-                    # History is recorded for every configured ZIP so every channel has its own graph.
-                    self.history_store.record(lid, data.get("current") or {})
-                    self._set_location_status(lid, "history", ok=True)
-                except Exception as exc:
-                    self._set_location_status(lid, "history", ok=False, error=str(exc))
+                history_pending.append((lid, data.get("current") or {}, None))
 
         if self.history_store and (settings.get("history") or {}).get("enabled", True):
             try:
-                self.history_store.cleanup(int((settings.get("history") or {}).get("retention_days", 90)))
+                self.history_store.record_many(history_pending)
+                for lid, _, _ in history_pending:
+                    self._set_location_status(lid, "history", ok=True)
+                self.history_store.cleanup_if_due(int((settings.get("history") or {}).get("retention_days", 90)))
                 self._mark_source("weather_history", True)
             except Exception as exc:
+                for lid, _, _ in history_pending:
+                    self._set_location_status(lid, "history", ok=False, error=str(exc))
                 self._mark_source("weather_history", False, str(exc))
 
         self._mark_source("open_meteo", open_ok > 0, None if open_ok else ("; ".join(errors) or "No locations loaded"))
@@ -400,6 +483,7 @@ class WeatherManager:
             self._snapshot["last_weather_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
             if errors:
                 self._snapshot["last_error"] = "; ".join(errors)
+            self._changed_locked()
 
     def _refresh_storm_guidance(self, settings: dict[str, Any]) -> None:
         cfg = settings.get("storm_guidance") or {}
@@ -409,6 +493,7 @@ class WeatherManager:
             with self._lock:
                 self._snapshot["storm_guidance"] = {}
                 self._snapshot["storm_guidance_by_location"] = {}
+                self._changed_locked()
             return
 
         with self._lock:
@@ -416,24 +501,35 @@ class WeatherManager:
         result: dict[str, Any] = {}
         errors: list[str] = []
         successes = 0
-        for location in locations:
+        def fetch_location(location: dict[str, Any]):
             lid = location["id"]
             try:
-                storm = fetch_storm_guidance(location)
-                result[lid] = storm
-                successes += 1
+                storm = fetch_storm_guidance(location, self._client)
                 self._set_location_status(lid, "storm_guidance", ok=True)
+                return lid, storm, None
             except Exception as exc:
                 cached = previous.get(lid)
-                errors.append(f"{location.get('postal_code')}: {exc}")
                 if cached:
-                    result[lid] = copy.deepcopy(cached)
-                    result[lid]["error"] = str(exc)
-                    result[lid]["stale"] = True
+                    storm = copy.deepcopy(cached)
+                    storm["error"] = str(exc)
+                    storm["stale"] = True
+                else:
+                    storm = None
                 self._set_location_status(lid, "storm_guidance", ok=False, error=str(exc), cached=bool(cached))
+                return lid, storm, f"{location.get('postal_code')}: {exc}"
+        futures = [self._executor.submit(fetch_location, location) for location in locations]
+        for future in as_completed(futures):
+            lid, storm, error = future.result()
+            if storm is not None:
+                result[lid] = storm
+            if error:
+                errors.append(error)
+            else:
+                successes += 1
         with self._lock:
             self._snapshot["storm_guidance_by_location"] = result
             self._snapshot["storm_guidance"] = copy.deepcopy(result.get(primary_id) or {})
+            self._changed_locked()
         self._mark_source("storm_guidance", successes > 0, None if successes else ("; ".join(errors) or "No storm guidance"))
 
     def _refresh_alerts(self, settings: dict[str, Any]) -> None:
@@ -444,6 +540,7 @@ class WeatherManager:
                 self._snapshot["alerts"] = []
                 self._snapshot["alerts_by_location"] = {}
                 self._snapshot["last_alert_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                self._changed_locked()
             return
 
         with self._lock:
@@ -451,21 +548,47 @@ class WeatherManager:
         result: dict[str, list[dict[str, Any]]] = {}
         errors: list[str] = []
         successes = 0
-        for location in locations:
+        def fetch_location(location: dict[str, Any]):
             lid = location["id"]
             try:
-                result[lid] = fetch_alerts(location, settings.get("nws_user_agent", ""))
-                successes += 1
+                alerts = fetch_alerts(location, settings.get("nws_user_agent", ""), self._client)
                 self._set_location_status(lid, "alerts", ok=True)
+                return lid, alerts, None
             except Exception as exc:
                 cached = previous.get(lid)
-                if cached is not None:
-                    result[lid] = copy.deepcopy(cached)
-                errors.append(f"{location.get('postal_code')}: {exc}")
+                alerts = copy.deepcopy(cached) if cached is not None else None
                 self._set_location_status(lid, "alerts", ok=False, error=str(exc), cached=cached is not None)
+                return lid, alerts, f"{location.get('postal_code')}: {exc}"
+        futures = [self._executor.submit(fetch_location, location) for location in locations]
+        for future in as_completed(futures):
+            lid, alerts, error = future.result()
+            if alerts is not None:
+                result[lid] = alerts
+            if error:
+                errors.append(error)
+            else:
+                successes += 1
+
+        locations_by_id = {str(location.get("id")): location for location in locations}
+        for lid, alerts in result.items():
+            old_ids = {str(row.get("id") or row.get("identifier") or "") for row in previous.get(lid, [])}
+            location = locations_by_id.get(str(lid)) or {}
+            for alert in alerts:
+                severity = str(alert.get("severity") or "Unknown")
+                alert_id = str(alert.get("id") or alert.get("identifier") or "")
+                if alert_id and alert_id not in old_ids and severity in {"Severe", "Extreme"}:
+                    observability.event(
+                        "severe",
+                        str(alert.get("event") or "Severe weather alert"),
+                        alert_id=alert_id,
+                        severity=severity,
+                        location_id=lid,
+                        postal_code=location.get("postal_code"),
+                    )
 
         with self._lock:
             self._snapshot["alerts_by_location"] = result
             self._snapshot["alerts"] = copy.deepcopy(result.get(primary_id) or [])
             self._snapshot["last_alert_update"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            self._changed_locked()
         self._mark_source("nws_alerts", successes > 0, None if successes else ("; ".join(errors) or "No alert data"))

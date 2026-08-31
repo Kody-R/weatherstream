@@ -15,6 +15,37 @@ from app.config import CONFIG_DIR, SETTINGS_PATH
 from app.history import DB_PATH
 from app.streamer import LIVE_DIR, encoder_capabilities
 
+MAX_BACKUP_MEMBERS = 8
+MAX_BACKUP_SETTINGS_BYTES = 2 * 1024 * 1024
+MAX_BACKUP_DATABASE_BYTES = 128 * 1024 * 1024
+MAX_BACKUP_BRANDING_BYTES = 8 * 1024 * 1024
+MAX_BACKUP_TOTAL_BYTES = 140 * 1024 * 1024
+MAX_BACKUP_COMPRESSION_RATIO = 200
+ALLOWED_BACKUP_NAMES = {"manifest.json", "settings.json", "weatherstream.db", "branding/logo.png"}
+
+
+def _validate_backup_archive(zf: zipfile.ZipFile) -> None:
+    members = zf.infolist()
+    if len(members) > MAX_BACKUP_MEMBERS:
+        raise ValueError(f"Backup contains too many files ({len(members)}; maximum {MAX_BACKUP_MEMBERS})")
+    total = 0
+    for member in members:
+        name = member.filename.replace("\\", "/").strip("/")
+        if member.is_dir():
+            continue
+        if name not in ALLOWED_BACKUP_NAMES:
+            raise ValueError(f"Backup contains unsupported file: {name}")
+        limit = MAX_BACKUP_SETTINGS_BYTES if name in {"manifest.json", "settings.json"} else MAX_BACKUP_DATABASE_BYTES if name == "weatherstream.db" else MAX_BACKUP_BRANDING_BYTES
+        if member.file_size < 0 or member.file_size > limit:
+            raise ValueError(f"Backup file {name} is larger than the allowed limit")
+        if member.compress_size == 0 and member.file_size > 0:
+            raise ValueError(f"Backup file {name} has an invalid compressed size")
+        if member.compress_size and member.file_size / member.compress_size > MAX_BACKUP_COMPRESSION_RATIO:
+            raise ValueError(f"Backup file {name} has an unsafe compression ratio")
+        total += member.file_size
+    if total > MAX_BACKUP_TOTAL_BYTES:
+        raise ValueError("Backup expands beyond the allowed total size")
+
 BRANDING_DIR = CONFIG_DIR / "branding"
 
 BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
@@ -116,7 +147,7 @@ def system_status() -> dict[str, Any]:
 def create_backup_bytes(settings: dict[str, Any]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", json.dumps({"product":"WeatherStream","version":"0.2.2","created_at":time.time()}, indent=2))
+        zf.writestr("manifest.json", json.dumps({"product":"WeatherStream","version":"0.2.5","created_at":time.time()}, indent=2))
         zf.writestr("settings.json", json.dumps(settings, indent=2))
         if DB_PATH.exists(): zf.write(DB_PATH, "weatherstream.db")
         if BRANDING_DIR.exists():
@@ -127,6 +158,7 @@ def create_backup_bytes(settings: dict[str, Any]) -> bytes:
 
 def inspect_backup(data: bytes) -> dict[str, Any]:
     with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+        _validate_backup_archive(zf)
         names = set(zf.namelist())
         if "settings.json" not in names: raise ValueError("Backup is missing settings.json")
         settings = json.loads(zf.read("settings.json"))
@@ -137,6 +169,7 @@ def inspect_backup(data: bytes) -> dict[str, Any]:
 def restore_backup_bytes(data: bytes, config_store, history_store) -> dict[str, Any]:
     info = inspect_backup(data)
     with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+        _validate_backup_archive(zf)
         settings = info["settings"]
         # Write through ConfigStore so schema validation/migration rules are applied.
         config_store.replace(settings)
@@ -156,12 +189,14 @@ def restore_backup_bytes(data: bytes, config_store, history_store) -> dict[str, 
 
 def create_diagnostics_bytes(settings: dict[str, Any], app_status: dict[str, Any], channels: dict[str, Any], streamer) -> bytes:
     sanitized = json.loads(json.dumps(settings))
-    # Nothing currently stored is a password/token, but avoid exporting an internal URL by default.
+    # Avoid exporting internal or credential-bearing URLs by default.
     if sanitized.get("public_base_url"):
         sanitized["public_base_url"] = "<configured>"
+    if (sanitized.get("notifications") or {}).get("webhook_url"):
+        sanitized["notifications"]["webhook_url"] = "<redacted>"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("README.txt", "WeatherStream v0.2.2 diagnostic bundle. No music files are included.\n")
+        zf.writestr("README.txt", "WeatherStream v0.2.5 diagnostic bundle. No music files are included.\n")
         zf.writestr("status.json", json.dumps(app_status, indent=2, default=str))
         zf.writestr("channels.json", json.dumps(channels, indent=2, default=str))
         zf.writestr("settings-sanitized.json", json.dumps(sanitized, indent=2))

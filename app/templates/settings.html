@@ -3,20 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.2.2 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.2.5 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.2</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.5</div>
       <h1>Channel Configuration</h1>
     </div>
     <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
   </header>
 
   <div id="flash" class="flash hidden"></div>
+
+  <section class="card settings-search" data-search-ignore>
+    <div class="card-head"><div><h2>Find a Setting</h2><p>Search by feature, field, or operational impact.</p></div><span class="pill">QoL</span></div>
+    <input id="settingsSearch" type="search" placeholder="Try: radar, restart, webhook, ZIP…" aria-label="Search settings">
+    <div class="impact-legend"><span class="pill ok">HOT — immediate</span><span class="pill">REFRESH — reloads data</span><span class="pill bad">RESTART — encoder restart</span></div>
+    <p id="settingsSearchState" class="hint top-gap"></p>
+  </section>
 
   <section class="grid two">
     <article class="card">
@@ -93,7 +100,7 @@
         <h2>Presentation</h2>
         <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.2.2</span>
+      <span class="pill">v0.2.5</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -113,7 +120,7 @@
       <label>Transition seconds<input id="transitionSeconds" type="number" min="0" max="2" step="0.05"></label>
       <label class="checkbox"><input id="showStationId" type="checkbox"> Show station ID bumper</label>
       <label class="checkbox"><input id="backgroundMotion" type="checkbox"> Animated theme background</label>
-      <label class="wide">Slide order <span class="hint">v0.2.2 slides include condition_focus, weather_history and spc_outlook, plus all existing radar/map slides.</span>
+      <label class="wide">Slide order <span class="hint">v0.2.2.1 slides include condition_focus, weather_history and spc_outlook, plus all existing radar/map slides.</span>
         <input id="slideSequence">
       </label>
       <label>Station ID<input id="durStation" type="number" min="3" max="20"></label>
@@ -135,7 +142,7 @@
       <label>Regional Conditions<input id="durRegional" type="number" min="3" max="60"></label>
       <label>Almanac<input id="durAlmanac" type="number" min="3" max="60"></label>
     </div>
-    <button class="button" onclick="saveGeneral()">Save Presentation</button>
+    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Presentation</button><button class="button ghost" onclick="startRundownPreview()">Preview Full Rundown</button></div>
   </section>
 
   <section class="grid two">
@@ -162,25 +169,29 @@
     <article class="card">
       <div class="card-head">
         <div>
-          <h2>Scheduled Local Updates</h2>
-          <p>Run a short-form local-weather block at classic cable-style minute marks. Severe Weather Takeover always has priority.</p>
+          <h2>Local on the 8s Programming Block</h2>
+          <p>A dedicated mini-program that interrupts normal RWN programming at the selected minute marks, runs every phase to completion, then returns to normal programming. Severe Weather Takeover always has priority.</p>
         </div>
         <span class="pill">CLOCKED</span>
       </div>
       <div class="form-grid">
-        <label class="checkbox"><input id="scheduledEnabled" type="checkbox"> Enable scheduled updates</label>
+        <label class="checkbox"><input id="scheduledEnabled" type="checkbox"> Enable Local on the 8s block</label>
         <label>Minute marks <span class="hint">Comma separated, 0–59</span><input id="scheduledMarks" placeholder="8,18,28,38,48,58"></label>
-        <label>Update window (seconds)<input id="scheduledWindow" type="number" min="30" max="300" step="10"></label>
-        <label class="wide">Local-update sequence <span class="hint">Example: station_id,current,radar_local,today,seven_day</span><input id="scheduledSequence"></label>
+        <label>Trigger grace window (seconds)<input id="scheduledWindow" type="number" min="30" max="300" step="10"></label>
+        <label class="wide">Local on the 8s phases <span class="hint">Supported: current,today,hourly,radar_local,seven_day. A dedicated Local on the 8s intro is added automatically.</span><input id="scheduledSequence"></label>
       </div>
-      <button class="button" onclick="saveGeneral()">Save Local Update Schedule</button>
+      <div class="row-actions">
+        <button class="button" onclick="saveGeneral()">Save Local on the 8s Schedule</button>
+        <button class="button ghost" onclick="testLocal8Block()">Run Local on the 8s Test</button>
+      </div>
+      <p class="hint top-gap">During a block, each phase stays on screen until its narration finishes (or its normal slide minimum time is met). If TTS is disabled or unavailable, the block still runs using normal slide timings.</p>
     </article>
 
     <article class="card">
       <div class="card-head">
         <div>
           <h2>Local on the 8s + Severe TTS</h2>
-          <p>Optional local Piper narration. v0.2.2 speaks only once during each scheduled Local on the 8s block and once for each new qualifying severe-weather alert. Normal rotation, Radar, and station IDs remain music-only.</p>
+          <p>Optional local Piper narration. v0.2.2.1 narrates each Local on the 8s phase separately and reads only values shown on that phase's screen. Qualifying severe alerts remain the only narration outside this block.</p>
         </div>
         <span class="pill" id="ttsState">DISABLED</span>
       </div>
@@ -228,7 +239,7 @@
 
 
   <section class="card">
-    <div class="card-head"><div><h2>RWN Network Channels</h2><p>v0.2.2 automatically builds one HLS channel per ZIP plus dedicated Radar and Severe Weather channels. All channels are published in <code>/playlist.m3u</code> and <code>/guide.xml</code>.</p></div><span class="pill">MULTI-CHANNEL</span></div>
+    <div class="card-head"><div><h2>RWN Network Channels</h2><p>v0.2.2.1 automatically builds one HLS channel per ZIP plus dedicated Radar and Severe Weather channels. All channels are published in <code>/playlist.m3u</code> and <code>/guide.xml</code>.</p></div><span class="pill">MULTI-CHANNEL</span></div>
     <div class="form-grid">
       <label class="checkbox"><input id="perZipChannels" type="checkbox"> One Local channel per ZIP</label>
       <label class="checkbox"><input id="radarChannelEnabled" type="checkbox"> RWN Radar channel</label>
@@ -243,7 +254,7 @@
   </section>
 
   <section class="card">
-    <div class="card-head"><div><h2>Realtime Video Performance</h2><p>v0.2.2 uses a lower-cost multi-channel profile and reports whether each HLS producer is actually keeping up with wall-clock time.</p></div><span class="pill">PERFORMANCE</span></div>
+    <div class="card-head"><div><h2>Realtime Video Performance</h2><p>v0.2.2.1 uses a lower-cost multi-channel profile and reports whether each HLS producer is actually keeping up with wall-clock time.</p></div><span class="pill">PERFORMANCE</span></div>
     <div class="form-grid">
       <label>Pipe FPS <span class="hint">Frames sent to FFmpeg each second.</span><input id="perfRenderFps" type="number" min="2" max="15" step="1"></label>
       <label>Content FPS <span class="hint">Expensive Pillow redraws per second; repeated frames fill the pipe FPS.</span><input id="perfContentFps" type="number" min="1" max="15" step="1"></label>
@@ -385,6 +396,24 @@
   </section>
 
   <section class="card">
+    <div class="card-head"><div><h2>Webhook Notifications</h2><p>Send selected operational events to Home Assistant, Discord-compatible relays, or another trusted webhook receiver. Delivery is bounded, asynchronous, and never blocks weather rendering.</p></div><span class="pill" id="notificationState">DISABLED</span></div>
+    <div class="form-grid">
+      <label class="checkbox"><input id="notificationsEnabled" type="checkbox"> Enable webhook delivery</label>
+      <label>Minimum interval per event type (seconds)<input id="notificationInterval" type="number" min="0" max="3600" step="5"></label>
+      <label class="wide">Webhook URL <span class="hint">HTTP(S) only. Private/LAN targets are blocked unless explicitly allowed.</span><input id="notificationUrl" type="url" autocomplete="off" placeholder="https://example.net/weatherstream-hook"></label>
+      <label class="checkbox"><input id="notificationAllowPrivate" type="checkbox"> Allow a trusted private/LAN target</label>
+      <label class="checkbox"><input class="notification-event" value="severe" type="checkbox"> Severe alerts</label>
+      <label class="checkbox"><input class="notification-event" value="source" type="checkbox"> Data-source health</label>
+      <label class="checkbox"><input class="notification-event" value="stream" type="checkbox"> Stream lifecycle</label>
+      <label class="checkbox"><input class="notification-event" value="settings" type="checkbox"> Settings changes</label>
+      <label class="checkbox"><input class="notification-event" value="refresh" type="checkbox"> Manual refreshes</label>
+      <label class="checkbox"><input class="notification-event" value="lifecycle" type="checkbox"> Container lifecycle</label>
+    </div>
+    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Notification Settings</button><button class="button ghost" onclick="testNotification()">Send Test</button></div>
+    <p id="notificationDetail" class="hint top-gap">No webhook deliveries yet.</p>
+  </section>
+
+  <section class="card">
     <div class="card-head"><div><h2>Data Source Diagnostics</h2><p>Each upstream source reports its most recent success/error so a stale radar or forecast can be identified without digging through container logs.</p></div><span class="pill">HEALTH</span></div>
     <div class="status-grid" id="sourceGrid"></div>
   </section>
@@ -394,6 +423,7 @@
     <div class="row-actions">
       <button class="button ghost" onclick="previewSlide('station_id')">Station ID</button><button class="button ghost" onclick="previewSlide('current')">Current</button><button class="button ghost" onclick="previewSlide('condition_focus')">Condition Focus</button><button class="button ghost" onclick="previewSlide('weather_history')">24h History</button><button class="button ghost" onclick="previewSlide('spc_outlook')">SPC Outlook</button><button class="button ghost" onclick="previewSlide('radar_local')">Local Radar</button><button class="button danger" onclick="previewTestAlert('alert')">TEST Warning</button><button class="button danger" onclick="previewTestAlert('alert_radar')">TEST Warning Radar</button>
     </div>
+    <div class="rundown-controls top-gap"><label>Preview pace<select id="rundownPace"><option value="0.75">0.75 sec / slide</option><option value="1.5" selected>1.5 sec / slide</option><option value="3">3 sec / slide</option></select></label><button class="button" onclick="startRundownPreview()">Play Rundown</button><button class="button ghost" onclick="stopRundownPreview()">Stop</button><span id="rundownState" class="hint">Ready</span></div>
   </section>
 
   <section class="grid two">
@@ -422,6 +452,7 @@
 <script>
 let settings = null;
 let previewHoldUntil = 0;
+let rundownTimer = null;
 const flash = document.getElementById('flash');
 function notify(msg, bad=false) {
   flash.textContent = msg;
@@ -498,7 +529,7 @@ async function loadSettings() {
   scheduledEnabled.checked = !!scheduled.enabled;
   scheduledMarks.value = (scheduled.minute_marks || [8,18,28,38,48,58]).join(',');
   scheduledWindow.value = scheduled.window_seconds ?? 120;
-  scheduledSequence.value = (scheduled.sequence || ['station_id','current','radar_local','today','seven_day']).join(',');
+  scheduledSequence.value = (scheduled.sequence || ['current','today','hourly','radar_local','seven_day']).join(',');
   const tts = settings.tts || {};
   ttsEnabled.checked = !!tts.enabled;
   ttsLocalOn8s.checked = tts.local_on_8s !== false;
@@ -564,6 +595,13 @@ async function loadSettings() {
   perfHlsSegment.value = settings.video?.hls_segment_seconds ?? 3;
   perfHlsList.value = settings.video?.hls_list_size ?? 10;
   perfPreviewInterval.value = settings.video?.preview_interval_seconds ?? 5;
+  const notifications = settings.notifications || {};
+  notificationsEnabled.checked = !!notifications.enabled;
+  notificationUrl.value = notifications.webhook_url || '';
+  notificationInterval.value = notifications.minimum_interval_seconds ?? 30;
+  notificationAllowPrivate.checked = !!notifications.allow_private_targets;
+  const selectedNotificationEvents = new Set(notifications.events || []);
+  document.querySelectorAll('.notification-event').forEach(box => box.checked = selectedNotificationEvents.has(box.value));
   renderLocations();
 }
 musicVolume.addEventListener('input', () => volumeValue.textContent = musicVolume.value + '%');
@@ -613,6 +651,13 @@ async function saveGeneral() {
     service_area: serviceArea.value.trim(),
     theme: theme.value,
     public_base_url: publicBaseUrl.value.trim(),
+    notifications: {
+      enabled: notificationsEnabled.checked,
+      webhook_url: notificationUrl.value.trim(),
+      minimum_interval_seconds: Number(notificationInterval.value || 0),
+      allow_private_targets: notificationAllowPrivate.checked,
+      events: [...document.querySelectorAll('.notification-event:checked')].map(box => box.value)
+    },
     branding: {
       logo_enabled: logoEnabled.checked,
       use_builtin_logo: useBuiltinLogo.checked,
@@ -796,8 +841,56 @@ async function testTts() {
   } catch(e) { notify(e.message, true); }
 }
 
+async function testLocal8Block() {
+  try {
+    if (!settings) settings = await jfetch('/api/settings');
+    const channels = await jfetch('/api/channels');
+    const primary = settings?.primary_location_id;
+    const local = (channels.channels || []).find(c => c.mode === 'local' && c.location_id === primary) || (channels.channels || []).find(c => c.mode === 'local');
+    if (!local) throw new Error('No enabled RWN Local channel is available.');
+    await jfetch(`/api/channels/${encodeURIComponent(local.key)}/local8-test`, {method:'POST'});
+    notify(`Local on the 8s test started on ${local.name}. Tune that channel to watch the full phase-by-phase block.`);
+  } catch(e) { notify(e.message, true); }
+}
+
 function previewSlide(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?t=${Date.now()}`; notify(`Previewing ${name} for 12 seconds. Live channel unchanged.`); }
 function previewTestAlert(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?test_alert=true&t=${Date.now()}`; notify('TEST alert preview for 12 seconds — live channel unchanged.'); }
+function stopRundownPreview() {
+  if (rundownTimer) clearTimeout(rundownTimer);
+  rundownTimer = null; previewHoldUntil = 0; rundownState.textContent = 'Stopped';
+}
+async function startRundownPreview() {
+  stopRundownPreview();
+  try {
+    const rundown = await jfetch('/api/rundown/preview');
+    const phases = rundown.phases || [];
+    if (!phases.length) throw new Error('No enabled slides are available.');
+    const pace = Math.max(.5, Number(rundownPace.value || 1.5));
+    previewHoldUntil = Date.now() + phases.length * pace * 1000 + 5000;
+    let index = 0;
+    const advance = () => {
+      if (index >= phases.length) { rundownTimer = null; rundownState.textContent = `Complete • ${phases.length} slides`; notify('Accelerated rundown preview complete. Live channels were unchanged.'); return; }
+      const phase = phases[index++];
+      preview.src = `${phase.preview_url}&t=${Date.now()}`;
+      rundownState.textContent = `${index}/${phases.length} • ${phase.slide.replaceAll('_',' ')} • live ${phase.duration_seconds}s`;
+      rundownTimer = setTimeout(advance, pace * 1000);
+    };
+    advance();
+  } catch(e) { rundownState.textContent = 'Preview failed'; notify(e.message, true); }
+}
+async function refreshNotificationStatus() {
+  try {
+    const n = await jfetch('/api/notifications/status');
+    notificationState.textContent = !n.enabled ? 'DISABLED' : (n.last_error ? 'DELIVERY ERROR' : (n.configured ? 'READY' : 'URL NEEDED'));
+    notificationState.className = 'pill ' + (n.enabled && n.configured && !n.last_error ? 'ok' : (n.last_error ? 'bad' : ''));
+    const success = n.last_success ? `Last delivered ${new Date(n.last_success*1000).toLocaleString()}` : 'No successful deliveries yet';
+    notificationDetail.textContent = n.last_error ? `Last error: ${n.last_error}` : `${success} • ${n.sent||0} sent • ${n.dropped||0} suppressed/dropped`;
+  } catch(e) {}
+}
+async function testNotification() {
+  try { await jfetch('/api/notifications/test', {method:'POST'}); notify('Webhook test queued.'); setTimeout(refreshNotificationStatus, 1200); }
+  catch(e) { notify(e.message, true); }
+}
 async function cleanCache() { try { const r=await jfetch('/api/cache/clean',{method:'POST'}); notify(`Cache cleanup removed ${r.removed_files} files.`); refreshStatus(); } catch(e) { notify(e.message,true); } }
 
 async function manualRefresh() { try { await jfetch('/api/refresh', {method:'POST'}); notify('Weather refresh requested.'); } catch(e) { notify(e.message, true); } }
@@ -854,7 +947,33 @@ async function refreshStatus() {
     } else lastError.className = 'error-box hidden';
   } catch(e) {}
 }
-loadSettings(); refreshStatus(); refreshTtsStatus(); setInterval(refreshStatus, 5000); setInterval(refreshTtsStatus, 10000);
+function initializeSettingsSearch() {
+  const impacts = [
+    ['background audio','RESTART'],['text-to-speech','RESTART'],['realtime video','RESTART'],['network channels','RESTART'],
+    ['zip codes','REFRESH'],['maps & city','REFRESH'],['radar studio','REFRESH'],['forecast intelligence','REFRESH'],['advanced refresh','REFRESH']
+  ];
+  document.querySelectorAll('article.card, main > section.card').forEach(card => {
+    if (card.matches('[data-search-ignore]')) return;
+    const title = (card.querySelector('h2')?.textContent || '').trim();
+    const lower = title.toLowerCase();
+    const impact = impacts.find(([needle]) => lower.includes(needle))?.[1] || 'HOT';
+    card.dataset.impact = impact;
+    card.dataset.searchText = `${card.textContent} ${impact} ${impact === 'RESTART' ? 'encoder restart' : impact === 'REFRESH' ? 'data reload' : 'immediate no restart'}`.toLowerCase();
+    const tag = document.createElement('span'); tag.className = `pill impact-tag ${impact === 'HOT' ? 'ok' : impact === 'RESTART' ? 'bad' : ''}`; tag.textContent = impact;
+    card.prepend(tag);
+  });
+  settingsSearch.addEventListener('input', () => {
+    const query = settingsSearch.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll('article.card, main > section.card:not([data-search-ignore])').forEach(card => {
+      const match = !query || card.dataset.searchText?.includes(query);
+      card.classList.toggle('settings-filtered', !match); if (match) shown++;
+    });
+    document.querySelectorAll('main > section.grid').forEach(grid => grid.classList.toggle('settings-filtered', ![...grid.querySelectorAll('article.card')].some(card => !card.classList.contains('settings-filtered'))));
+    settingsSearchState.textContent = query ? `${shown} matching settings section${shown === 1 ? '' : 's'}` : '';
+  });
+}
+initializeSettingsSearch(); loadSettings(); refreshStatus(); refreshTtsStatus(); refreshNotificationStatus(); setInterval(refreshStatus, 5000); setInterval(refreshTtsStatus, 10000); setInterval(refreshNotificationStatus, 15000);
 </script>
 </body>
 </html>

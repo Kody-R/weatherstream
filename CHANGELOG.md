@@ -1,0 +1,82 @@
+# Changelog
+
+## 0.2.5
+
+### Added
+
+- Guided first-run setup for ZIP, station identity, theme, and stream lifecycle mode
+- Settings search and operational-impact labels
+- Copy controls for M3U, XMLTV, and HLS channel endpoints
+- Accelerated, non-disruptive full-rundown preview
+- Structured severe-weather, source-health, stream, settings, refresh, and lifecycle events
+- Optional bounded webhook notifications with cooldowns, delivery status, and test control
+- Settings schema 15 notification migration and test coverage
+
+### Changed
+
+- Fresh installations enter setup before the channel home page
+- Admin settings explain whether changes apply immediately, refresh data, or restart encoders
+- Diagnostics redact configured webhook URLs
+
+### Security
+
+- Webhooks accept only HTTP(S), reject embedded credentials, do not follow redirects, and block private or special-use targets unless a trusted LAN target is explicitly enabled
+- Notification tests use the existing administrator authentication and a three-per-five-minute rate limit
+
+## 0.2.4
+
+### Added
+
+- Revision-aware settings, weather, and SPC snapshots
+- Cached per-channel render contexts and dashboard cache statistics
+- Persistent upstream HTTP connection pools
+- Bounded concurrent ZIP refresh worker pool
+- Shared target-size radar frame and basemap caches
+- Cached transition masks and resized branding logos
+- Batched SQLite observation insertion and cached history reads
+- Performance-foundation unit tests
+
+### Changed
+
+- Rendering no longer deep-copies the complete settings and weather trees on every content frame
+- Radar/map source images are treated as immutable published assets
+- Weather, alert, storm-guidance, and SPC locations refresh concurrently within a configured bound
+- SQLite uses WAL mode, explicitly closes short-lived connections, maintains row counts incrementally, and cleans retention once daily
+
+### Fixed
+
+- Closed SQLite connections explicitly, preventing lingering database handles and improving restore/cleanup behavior on Windows-hosted development environments
+
+## 0.2.3
+
+### Added
+
+- Optional HTTP Basic authentication for administrator pages and sensitive APIs
+- In-process rate limiting for expensive administrator operations
+- Prometheus-compatible `/metrics` output
+- Constant-time liveness and readiness endpoints
+- Bounded recent-operations feed and Broadcast Dashboard panel
+- Fixed-size Piper synthesis executor and bounded queue
+- Initial `unittest` coverage for security, backup validation, and observability
+- Compose init and graceful-stop configuration
+
+### Changed
+
+- Docker health checks now use `/health/live`
+- Full status assembly is cached for one second
+- Channel worker start/stop operations are serialized
+- Background manager and channel threads are joined during shutdown
+- Backup database restores run `PRAGMA integrity_check`
+- Uploaded branding images are verified and limited to 20 megapixels
+
+### Security
+
+- Backup members are allow-listed and bounded by file count, expanded size, total size, and compression ratio
+- Sensitive routes return an HTTP Basic challenge when `WEATHERSTREAM_ADMIN_PASSWORD` is configured
+- Forwarded client addresses are ignored unless explicitly enabled for a trusted proxy
+- Common browser hardening headers are attached to responses
+
+## 0.2.2.1
+
+- Converted Local on the 8s into a dedicated, phase-aware programming block
+- Added screen-accurate per-phase narration and severe-weather preemption

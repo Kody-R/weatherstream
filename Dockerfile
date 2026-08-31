@@ -20,6 +20,6 @@ RUN mkdir -p /config /music /tmp/weatherstream/live
 
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8787/health >/dev/null || exit 1
+  CMD curl -fsS http://127.0.0.1:8787/health/live >/dev/null || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8787", "--workers", "1"]

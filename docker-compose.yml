@@ -2,9 +2,11 @@ services:
   weatherstream:
     build: .
     # After publishing to GHCR, replace "build: ." with, for example:
-    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.2.2
+    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.2.5
     container_name: weatherstream
+    init: true
     restart: unless-stopped
+    stop_grace_period: 20s
     ports:
       - "8787:8787"
     volumes:
@@ -12,12 +14,23 @@ services:
       - ./music:/music:ro
     environment:
       - TZ=America/Chicago
+      # Optional but strongly recommended when port 8787 is reachable by other devices.
+      # Browser admin pages use HTTP Basic authentication when this is set.
+      # - WEATHERSTREAM_ADMIN_USER=admin
+      # - WEATHERSTREAM_ADMIN_PASSWORD=replace-with-a-long-random-password
+      # Keep false unless a trusted reverse proxy overwrites X-Forwarded-For.
+      - WEATHERSTREAM_TRUST_PROXY_HEADERS=false
+      # Bound local Piper CPU concurrency and queued narration work.
+      - WEATHERSTREAM_TTS_WORKERS=1
+      - WEATHERSTREAM_TTS_QUEUE_SIZE=24
+      # Bounded concurrency for per-ZIP weather, alert, guidance, and SPC refreshes.
+      - WEATHERSTREAM_REFRESH_WORKERS=4
     # Optional Intel/AMD VAAPI or Intel QSV acceleration. Uncomment only when
     # /dev/dri exists on the Docker host, then select Auto/VAAPI/QSV in Admin.
     # devices:
     #   - /dev/dri:/dev/dri
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health/live"]
       interval: 30s
       timeout: 5s
       retries: 3

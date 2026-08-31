@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>WeatherStream v0.2.5 / First-Run Setup</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="shell" style="max-width:900px">
+  <header class="topbar"><div><div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.5</div><h1>Welcome to WeatherStream</h1></div><span class="pill">FIRST-RUN</span></header>
+  <div id="flash" class="flash hidden"></div>
+  <section class="card">
+    <div class="card-head"><div><h2>Build Your Local Weather Network</h2><p>This creates your first ZIP channel and chooses safe starting defaults. Everything remains editable in Admin.</p></div><span class="pill">STEP 1 OF 1</span></div>
+    <div class="form-grid">
+      <label>Primary U.S. ZIP code<input id="postal" inputmode="numeric" maxlength="5" placeholder="71270" autofocus></label>
+      <label>Network name<input id="station" maxlength="40" value="Roller Weather Network"></label>
+      <label>Callsign<input id="callsign" maxlength="12" value="RWN"></label>
+      <label>Service area<input id="service" maxlength="64" placeholder="Filled from your ZIP when blank"></label>
+      <label>Theme<select id="theme"><option value="local-90s">Local 90s</option><option value="classic-blue">Classic Blue</option><option value="retro-2000">Retro 2000</option><option value="terminal-80s">Terminal 80s</option><option value="cable-gold">Cable Gold</option></select></label>
+      <label>Encoder lifecycle<select id="mode"><option value="on_demand">On Demand — recommended</option><option value="always_on">Always On</option></select></label>
+    </div>
+    <div class="toolbar top-gap"><button id="complete" class="button">Create WeatherStream Network</button><a class="button ghost" href="/admin/settings">Advanced Settings</a></div>
+    <p class="hint top-gap">On Demand starts an encoder when Jellyfin or VLC requests a channel and stops it after the idle timeout. It is the best default for most home servers.</p>
+  </section>
+  <section class="grid two"><article class="card"><h2>What gets created</h2><p>Your local ZIP channel plus shared RWN Radar and RWN Severe Weather channels, published through M3U and XMLTV.</p></article><article class="card"><h2>What stays local</h2><p>Settings, history, branding, Piper voices, and caches remain under your persistent <code>/config</code> mount.</p></article></section>
+</main><script>
+const $=id=>document.getElementById(id),flash=$('flash');function note(message,bad=false){flash.textContent=message;flash.className='flash '+(bad?'bad':'ok')}
+$('complete').onclick=async()=>{const postal=$('postal').value.trim();if(!/^\d{5}$/.test(postal))return note('Enter a five-digit U.S. ZIP code.',true);$('complete').disabled=true;$('complete').textContent='Creating Network…';try{const response=await fetch('/api/setup/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({postal_code:postal,station_name:$('station').value.trim(),station_callsign:$('callsign').value.trim(),service_area:$('service').value.trim(),theme:$('theme').value,streaming_mode:$('mode').value})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Setup failed');note('Network created. Opening your channel home…');setTimeout(()=>location.href=data.redirect||'/',700)}catch(error){note(error.message,true);$('complete').disabled=false;$('complete').textContent='Create WeatherStream Network'}};
+</script></body></html>
