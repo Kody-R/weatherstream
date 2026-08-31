@@ -159,7 +159,7 @@ class RadarManager:
         default_zoom = {"local": 7, "regional": 6, "wide": 5}[view]
         zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.2 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
         with httpx.Client(timeout=18.0, follow_redirects=True, headers=headers) as client:
             base = self._build_basemap(client, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
@@ -187,7 +187,7 @@ class RadarManager:
         radar = settings.get("radar", {})
         frame_count = max(3, min(12, int(radar.get("frame_count", 8))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.2 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
 
         with httpx.Client(timeout=18.0, follow_redirects=True, headers=headers) as client:

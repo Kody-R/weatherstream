@@ -5,5 +5,5 @@ __pycache__
 config/*
 !config/.gitkeep
 music/*
-!music/.gitkeep
+!music/.gitignore
 weatherstream-v*.zip

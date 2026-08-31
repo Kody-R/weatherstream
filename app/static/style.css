@@ -78,3 +78,29 @@ input[type=range] { padding:0; }
 #sourceGrid span { text-transform:capitalize; }
 #sourceGrid small { grid-column:auto; }
 @media (max-width: 800px) { #sourceGrid div { grid-template-columns:1fr; } #sourceGrid small { grid-column:auto; } }
+
+/* v0.2.0 operations dashboard */
+.nav { display:flex; gap:8px; flex-wrap:wrap; }
+.metric { background:#091d2b; border:1px solid var(--line); border-radius:12px; padding:16px; min-width:0; }
+.metric .label { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+.metric .value { margin-top:7px; font-size:25px; font-weight:900; }
+.metric .sub { margin-top:5px; color:var(--muted); font-size:12px; }
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:16px 0; }
+.channel-card { display:grid; grid-template-columns:minmax(180px,1.4fr) minmax(130px,.8fr) auto; gap:14px; align-items:center; padding:14px; border:1px solid var(--line); background:#091d2b; border-radius:12px; }
+.channel-card + .channel-card { margin-top:10px; }
+.channel-card small { color:var(--muted); display:block; margin-top:5px; }
+.health-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:7px; background:var(--muted); }
+.health-dot.ok { background:var(--ok); }
+.health-dot.bad { background:var(--bad); }
+.toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.file-button input { display:none; }
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; min-width:850px; }
+th, td { text-align:left; padding:11px 9px; border-bottom:1px solid var(--line); vertical-align:middle; }
+th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+td input, td select { margin-top:0; min-width:90px; }
+.profile-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.profile-card { border:1px solid var(--line); border-radius:12px; padding:15px; background:#091d2b; }
+.profile-card p { margin-bottom:12px; }
+@media (max-width:900px) { .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .channel-card { grid-template-columns:1fr; } .profile-grid { grid-template-columns:1fr; } }
+@media (max-width:520px) { .metrics { grid-template-columns:1fr; } }

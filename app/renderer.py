@@ -475,9 +475,45 @@ class WeatherRenderer:
         settings, snapshot = self._channel_context(location_id, "local")
         return self._takeover_alert(settings, snapshot)
 
-    def render_channel(self, now: float | None = None, location_id: str | None = None, channel_mode: str = "local") -> Image.Image:
+    def narration_context_for(self, location_id: str | None = None, channel_mode: str = "local", now: float | None = None) -> dict[str, Any]:
+        """Return lightweight state used by the optional broadcast narrator.
+
+        Narration is deliberately constrained to Local on the 8s blocks and
+        qualifying severe alerts. Radar/normal rotation screens never trigger it.
+        """
         now = now or dt.datetime.now().timestamp()
         settings, snapshot = self._channel_context(location_id, channel_mode)
+        primary = self._primary(settings, snapshot) or {}
+        scheduled_elapsed = self._scheduled_update_elapsed(settings, snapshot, now) if channel_mode == "local" else None
+        local_dt = self._local_datetime(snapshot, settings, now)
+        block_id = None
+        if scheduled_elapsed is not None:
+            started = local_dt - dt.timedelta(seconds=scheduled_elapsed)
+            block_id = started.strftime("%Y%m%d-%H%M")
+        return {
+            "settings": settings,
+            "snapshot": snapshot,
+            "primary": primary,
+            "scheduled_update_active": scheduled_elapsed is not None,
+            "scheduled_block_id": block_id,
+            "takeover_alert": self._takeover_alert(settings, snapshot),
+        }
+
+    def render_channel(self, now: float | None = None, location_id: str | None = None, channel_mode: str = "local", runtime_overrides: dict[str, Any] | None = None) -> Image.Image:
+        now = now or dt.datetime.now().timestamp()
+        settings, snapshot = self._channel_context(location_id, channel_mode)
+        overrides = runtime_overrides or {}
+        if overrides.get("theme"):
+            settings["theme"] = overrides["theme"]
+        if "transition" in overrides:
+            settings.setdefault("presentation", {})["transition"] = overrides["transition"]
+        if "retro_enabled" in overrides:
+            settings.setdefault("presentation", {}).setdefault("retro_effects", {})["enabled"] = bool(overrides["retro_enabled"])
+        if overrides.get("performance_degraded"):
+            perf = settings.get("performance") or {}
+            if perf.get("adaptive_disable_retro", True):
+                settings.setdefault("presentation", {}).setdefault("retro_effects", {})["enabled"] = False
+            settings.setdefault("presentation", {})["transition"] = perf.get("adaptive_transition", "cut")
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720))
         c = self._theme(settings)
         primary = self._primary(settings, snapshot)

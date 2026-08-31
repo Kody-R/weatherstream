@@ -54,20 +54,34 @@ def _local_events(settings: dict[str, Any], location: dict[str, Any], severe: bo
 
 
 def channel_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
-    cfg=settings.get("channels") or {}; locations=list(settings.get("locations") or []); primary_id=settings.get("primary_location_id"); specs=[]
+    cfg=settings.get("channels") or {}; locations=list(settings.get("locations") or []); primary_id=settings.get("primary_location_id"); raw=[]
     if cfg.get("per_zip_enabled",True):
         for loc in locations[:max(1,min(24,int(cfg.get("max_zip_channels",12))))]:
             postal=str(loc.get("postal_code") or loc.get("id") or "local")
-            specs.append({"id":f"rwn.zip.{postal}","key":f"zip-{postal}","name":f"RWN Local - {loc.get('name') or postal}","mode":"local","location":loc})
+            raw.append({"id":f"rwn.zip.{postal}","key":f"zip-{postal}","name":f"RWN Local - {loc.get('name') or postal}","mode":"local","location":loc})
     primary=next((x for x in locations if x.get("id")==primary_id),None)
-    if primary and cfg.get("radar_enabled",True): specs.append({"id":"rwn.radar","key":"radar","name":"RWN Radar","mode":"radar","location":primary})
-    if primary and cfg.get("severe_enabled",True): specs.append({"id":"rwn.severe","key":"severe","name":"RWN Severe Weather","mode":"severe","location":primary})
+    if primary and cfg.get("radar_enabled",True): raw.append({"id":"rwn.radar","key":"radar","name":"RWN Radar","mode":"radar","location":primary})
+    if primary and cfg.get("severe_enabled",True): raw.append({"id":"rwn.severe","key":"severe","name":"RWN Severe Weather","mode":"severe","location":primary})
+
+    lineup = cfg.get("lineup") if isinstance(cfg.get("lineup"), list) else []
+    meta = {str(x.get("key")): x for x in lineup if isinstance(x, dict) and x.get("key")}
+    specs=[]
+    for idx,spec in enumerate(raw):
+        row=meta.get(spec["key"], {})
+        if row and not row.get("enabled", True):
+            continue
+        spec=dict(spec)
+        spec["name"] = str(row.get("name") or spec["name"])
+        spec["number"] = int(row.get("number") or (201+idx))
+        spec["override"] = (cfg.get("overrides") or {}).get(spec["key"], {}) if isinstance(cfg.get("overrides"), dict) else {}
+        specs.append(spec)
+    specs.sort(key=lambda x:(int(x.get("number") or 9999), x["key"]))
     return specs
 
 
 def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] | None = None, hours: int = 24) -> str:
     severe_by_location=severe_by_location or {}; specs=channel_specs(settings)
-    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.1.8.1">']
+    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.2.2">']
     for spec in specs:
         lines += [f'  <channel id="{escape(spec["id"])}">',f'    <display-name>{escape(spec["name"])}</display-name>','  </channel>']
     for spec in specs:

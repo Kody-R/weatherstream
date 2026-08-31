@@ -2,7 +2,7 @@ services:
   weatherstream:
     build: .
     # After publishing to GHCR, replace "build: ." with, for example:
-    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.1.8.1
+    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.2.2
     container_name: weatherstream
     restart: unless-stopped
     ports:
@@ -12,6 +12,10 @@ services:
       - ./music:/music:ro
     environment:
       - TZ=America/Chicago
+    # Optional Intel/AMD VAAPI or Intel QSV acceleration. Uncomment only when
+    # /dev/dri exists on the Docker host, then select Auto/VAAPI/QSV in Admin.
+    # devices:
+    #   - /dev/dri:/dev/dri
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
       interval: 30s

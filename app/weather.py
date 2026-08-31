@@ -135,7 +135,7 @@ def fetch_storm_guidance(location: dict[str, Any]) -> dict[str, Any]:
 
 def fetch_nws_forecast(location: dict[str, Any], user_agent: str) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.2.2 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     lat = float(location["latitude"])
@@ -176,7 +176,7 @@ def fetch_nws_forecast(location: dict[str, Any], user_agent: str) -> dict[str, A
 
 def fetch_alerts(location: dict[str, Any], user_agent: str) -> list[dict[str, Any]]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.2.2 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     point = f"{float(location['latitude']):.4f},{float(location['longitude']):.4f}"

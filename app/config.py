@@ -12,7 +12,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 10,
+    "version": 13,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -45,6 +45,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "radar_local", "regional_map", "radar_regional"
         ],
         "max_zip_channels": 12,
+        # Fresh on-demand releases default to on-demand encoding. Upgrades from
+        # v0.2.0 preserve their prior always-on behavior until changed in Admin.
+        "streaming_mode": "on_demand",
+        "idle_timeout_seconds": 90,
+        "startup_timeout_seconds": 12,
+        "severe_auto_start": True,
+        "lineup": [],
+        "overrides": {},
     },
     "maps": {
         "auto_city_labels": True,
@@ -93,7 +101,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.1.8.1 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.2.2 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -127,6 +135,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "volume": 0.30,
         "shuffle": True,
     },
+    "tts": {
+        "enabled": False,
+        "provider": "piper",
+        "voice": "en_US-lessac-medium",
+        "auto_download_voice": True,
+        "local_on_8s": True,
+        "severe_alerts": True,
+        "volume": 0.92,
+        "speed": 1.0,
+        "duck_music": True,
+        "cache_items": 64,
+    },
     "video": {
         "width": 1280,
         "height": 720,
@@ -138,7 +158,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "hls_segment_seconds": 3,
         "hls_list_size": 10,
         "preview_interval_seconds": 5,
+        "encoder": "software",
     },
+    "performance": {
+        "mode": "adaptive",
+        "stall_recovery_enabled": True,
+        "stall_seconds": 15,
+        "adaptive_bad_seconds": 18,
+        "adaptive_recover_seconds": 120,
+        "adaptive_disable_retro": True,
+        "adaptive_transition": "cut",
+        "adaptive_content_fps": 2,
+    },
+    "custom_profiles": {},
     "presentation": {
         "transition": "crossfade",
         "transition_seconds": 0.75,
@@ -327,7 +359,29 @@ class ConfigStore:
                     if key not in old_video:
                         merged["video"][key] = DEFAULT_SETTINGS["video"][key]
 
-            merged["version"] = 10
+            if previous_version < 11:
+                merged["channels"] = _deep_merge(DEFAULT_SETTINGS["channels"], raw.get("channels") or {})
+                merged["performance"] = _deep_merge(DEFAULT_SETTINGS["performance"], raw.get("performance") or {})
+                merged["custom_profiles"] = raw.get("custom_profiles") if isinstance(raw.get("custom_profiles"), dict) else {}
+                old_video = raw.get("video") if isinstance(raw.get("video"), dict) else {}
+                if "encoder" not in old_video:
+                    merged["video"]["encoder"] = "software"
+
+            if previous_version < 12:
+                # The prior release introduced optional on-demand channel encoding. Existing
+                # v0.2.0 installations retain always-on behavior until the user
+                # explicitly selects On Demand in the Channel Lineup page.
+                old_channels = raw.get("channels") if isinstance(raw.get("channels"), dict) else {}
+                merged["channels"] = _deep_merge(DEFAULT_SETTINGS["channels"], old_channels)
+                if "streaming_mode" not in old_channels:
+                    merged["channels"]["streaming_mode"] = "always_on"
+
+            if previous_version < 13:
+                # v0.2.2 adds optional Piper narration. It is disabled on upgrade
+                # so existing channels keep their exact audio behavior until enabled.
+                merged["tts"] = _deep_merge(DEFAULT_SETTINGS["tts"], raw.get("tts") or {})
+
+            merged["version"] = 13
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -342,6 +396,21 @@ class ConfigStore:
         with self._lock:
             return copy.deepcopy(self._settings)
 
+    def reload(self) -> dict[str, Any]:
+        with self._lock:
+            self._settings = self._load()
+            self._save_locked()
+            return copy.deepcopy(self._settings)
+
+    def replace(self, settings: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(settings, dict):
+            raise ValueError("settings payload must be an object")
+        with self._lock:
+            self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
+            self._settings["version"] = 13
+            self._save_locked()
+        return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
+
     def update_general(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {
             "station_name", "station_callsign", "station_slogan", "service_area",
@@ -349,17 +418,18 @@ class ConfigStore:
             "alert_refresh_seconds", "nws_user_agent", "music", "radar",
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
             "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video",
+            "performance", "custom_profiles", "tts",
         }
         with self._lock:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 10
+            self._settings["version"] = 13
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -368,6 +438,22 @@ class ConfigStore:
             self._settings["weather_refresh_seconds"] = max(120, int(self._settings["weather_refresh_seconds"]))
             self._settings["alert_refresh_seconds"] = max(30, int(self._settings["alert_refresh_seconds"]))
             self._settings["music"]["volume"] = _clamp_float(self._settings["music"].get("volume"), 0.0, 1.0, 0.30)
+
+            tts = _deep_merge(DEFAULT_SETTINGS["tts"], self._settings.get("tts") or {})
+            tts["enabled"] = bool(tts.get("enabled", False))
+            tts["provider"] = "piper"
+            voice = str(tts.get("voice") or "en_US-lessac-medium").strip()[:96]
+            if not voice or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for ch in voice):
+                voice = "en_US-lessac-medium"
+            tts["voice"] = voice
+            tts["auto_download_voice"] = bool(tts.get("auto_download_voice", True))
+            tts["local_on_8s"] = bool(tts.get("local_on_8s", True))
+            tts["severe_alerts"] = bool(tts.get("severe_alerts", True))
+            tts["volume"] = _clamp_float(tts.get("volume"), 0.0, 1.0, 0.92)
+            tts["speed"] = _clamp_float(tts.get("speed"), 0.70, 1.35, 1.0)
+            tts["duck_music"] = bool(tts.get("duck_music", True))
+            tts["cache_items"] = _clamp_int(tts.get("cache_items"), 8, 256, 64)
+            self._settings["tts"] = tts
 
             video = _deep_merge(DEFAULT_SETTINGS["video"], self._settings.get("video") or {})
             video["width"] = _clamp_int(video.get("width"), 640, 1920, 1280)
@@ -383,6 +469,8 @@ class ConfigStore:
             bitrate = str(video.get("bitrate") or "2000k").strip().lower()
             if not bitrate.endswith("k") or not bitrate[:-1].isdigit(): bitrate = "2000k"
             video["bitrate"] = bitrate
+            if video.get("encoder") not in {"auto", "software", "nvenc", "qsv", "vaapi"}:
+                video["encoder"] = "software"
             self._settings["video"] = video
 
             radar = self._settings["radar"]
@@ -474,7 +562,60 @@ class ConfigStore:
             channels["radar_enabled"] = bool(channels.get("radar_enabled", True))
             channels["severe_enabled"] = bool(channels.get("severe_enabled", True))
             channels["max_zip_channels"] = _clamp_int(channels.get("max_zip_channels"), 1, 24, 12)
+            if channels.get("streaming_mode") not in {"always_on", "on_demand"}:
+                channels["streaming_mode"] = "on_demand"
+            channels["idle_timeout_seconds"] = _clamp_int(channels.get("idle_timeout_seconds"), 15, 3600, 90)
+            channels["startup_timeout_seconds"] = _clamp_int(channels.get("startup_timeout_seconds"), 5, 60, 12)
+            channels["severe_auto_start"] = bool(channels.get("severe_auto_start", True))
+            lineup = channels.get("lineup") if isinstance(channels.get("lineup"), list) else []
+            clean_lineup = []
+            seen_keys = set()
+            for item in lineup[:64]:
+                if not isinstance(item, dict): continue
+                key = str(item.get("key") or "").strip()[:64]
+                if not key or key in seen_keys: continue
+                seen_keys.add(key)
+                clean_lineup.append({
+                    "key": key,
+                    "enabled": bool(item.get("enabled", True)),
+                    "number": _clamp_int(item.get("number"), 1, 9999, 200 + len(clean_lineup) + 1),
+                    "name": str(item.get("name") or "")[:64],
+                })
+            channels["lineup"] = clean_lineup
+            overrides = channels.get("overrides") if isinstance(channels.get("overrides"), dict) else {}
+            clean_overrides = {}
+            for key, item in list(overrides.items())[:64]:
+                if not isinstance(item, dict): continue
+                row = {}
+                theme = item.get("theme")
+                if theme in {"classic-blue", "local-90s", "retro-2000", "terminal-80s", "cable-gold"}: row["theme"] = theme
+                for b in ("music_enabled", "retro_enabled"):
+                    if b in item: row[b] = bool(item.get(b))
+                if "music_volume" in item: row["music_volume"] = _clamp_float(item.get("music_volume"), 0, 1, 0.30)
+                if item.get("transition") in {"cut", "crossfade", "wipe", "wipe_vertical", "slide_left", "slide_up", "venetian", "dissolve", "pixel_dissolve", "crt_fade"}: row["transition"] = item.get("transition")
+                if item.get("encoder") in {"auto", "software", "nvenc", "qsv", "vaapi"}: row["encoder"] = item.get("encoder")
+                if item.get("streaming_mode") in {"always_on", "on_demand"}: row["streaming_mode"] = item.get("streaming_mode")
+                if "output_fps" in item: row["output_fps"] = _clamp_int(item.get("output_fps"), 5, 30, 15)
+                if "content_fps" in item: row["content_fps"] = _clamp_int(item.get("content_fps"), 1, 10, 3)
+                if "bitrate" in item:
+                    br = str(item.get("bitrate") or "").lower().strip()
+                    if br.endswith("k") and br[:-1].isdigit(): row["bitrate"] = br
+                clean_overrides[str(key)[:64]] = row
+            channels["overrides"] = clean_overrides
             self._settings["channels"] = channels
+
+            performance = _deep_merge(DEFAULT_SETTINGS["performance"], self._settings.get("performance") or {})
+            if performance.get("mode") not in {"manual", "adaptive", "maximum_quality", "balanced", "low_cpu"}: performance["mode"] = "adaptive"
+            performance["stall_recovery_enabled"] = bool(performance.get("stall_recovery_enabled", True))
+            performance["stall_seconds"] = _clamp_int(performance.get("stall_seconds"), 8, 120, 15)
+            performance["adaptive_bad_seconds"] = _clamp_int(performance.get("adaptive_bad_seconds"), 6, 120, 18)
+            performance["adaptive_recover_seconds"] = _clamp_int(performance.get("adaptive_recover_seconds"), 30, 900, 120)
+            performance["adaptive_disable_retro"] = bool(performance.get("adaptive_disable_retro", True))
+            if performance.get("adaptive_transition") not in {"cut", "crossfade"}: performance["adaptive_transition"] = "cut"
+            performance["adaptive_content_fps"] = _clamp_int(performance.get("adaptive_content_fps"), 1, 5, 2)
+            self._settings["performance"] = performance
+
+            self._settings["custom_profiles"] = self._settings.get("custom_profiles") if isinstance(self._settings.get("custom_profiles"), dict) else {}
 
             valid_slides = {
                 "station_id", "current", "today", "nws_forecast", "hourly", "precipitation",

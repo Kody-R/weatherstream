@@ -1,771 +1,89 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.1.8.1 / Roller Weather Network Admin</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WeatherStream v0.2.2 / RWN Broadcast Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
-    <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.1.8.1</div>
-      <h1>Channel Configuration</h1>
-    </div>
-    <a class="button ghost" href="/">Channel Home</a>
+    <div><div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.2</div><h1>Broadcast Dashboard</h1></div>
+    <nav class="nav"><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/admin/settings">Settings</a><a class="button ghost" href="/">Channel Home</a></nav>
   </header>
-
   <div id="flash" class="flash hidden"></div>
 
-  <section class="grid two">
+  <section class="card">
+    <div class="card-head"><div><h2>Network Health</h2><p>Realtime output, source health and container headroom in one view.</p></div><span id="networkState" class="pill">CHECKING</span></div>
+    <div class="metrics">
+      <div class="metric"><div class="label">Channels On Air</div><div id="mChannels" class="value">--</div><div id="mChannelsSub" class="sub">Waiting</div></div>
+      <div class="metric"><div class="label">Realtime</div><div id="mRealtime" class="value">--</div><div id="mRealtimeSub" class="sub">HLS producers</div></div>
+      <div class="metric"><div class="label">System Load</div><div id="mLoad" class="value">--</div><div id="mLoadSub" class="sub">container-visible CPUs</div></div>
+      <div class="metric"><div class="label">Memory</div><div id="mMemory" class="value">--</div><div id="mMemorySub" class="sub">container / host view</div></div>
+    </div>
+    <div id="channels"></div>
+  </section>
+
+  <section class="grid two top-gap">
     <article class="card">
-      <h2>Station</h2>
+      <div class="card-head"><div><h2>Performance Manager</h2><p>Adaptive mode protects realtime playback by reducing expensive rendering work when a channel falls behind.</p></div><span id="perfPill" class="pill">ADAPTIVE</span></div>
       <div class="form-grid">
-        <label>Station name<input id="stationName" maxlength="40"></label>
-        <label>Call letters <span class="hint">Optional, e.g. KWSR</span><input id="stationCallsign" maxlength="12"></label>
-        <label>Station slogan<input id="stationSlogan" maxlength="64" placeholder="Your Local Weather Source"></label>
-        <label>Service area<input id="serviceArea" maxlength="64" placeholder="North Louisiana"></label>
-        <label>Theme
-          <select id="theme">
-            <option value="classic-blue">Classic Blue</option>
-            <option value="local-90s">Local Cable 90s</option>
-            <option value="retro-2000">Retro 2000</option>
-            <option value="terminal-80s">Weather Terminal 80s</option>
-            <option value="cable-gold">Cable Gold</option>
-          </select>
-        </label>
-        <label class="wide">Public base URL <span class="hint">Optional; useful when Jellyfin reaches the container by another hostname/IP.</span>
-          <input id="publicBaseUrl" placeholder="http://192.168.1.25:8787">
-        </label>
+        <label>Mode<select id="perfMode"><option value="adaptive">Adaptive</option><option value="balanced">Balanced</option><option value="manual">Manual</option><option value="maximum_quality">Maximum Quality</option><option value="low_cpu">Low CPU</option></select></label>
+        <label>Hardware encoder<select id="encoder"><option value="software">Software / libx264</option><option value="auto">Auto detect</option><option value="qsv">Intel QSV</option><option value="vaapi">VAAPI</option><option value="nvenc">NVIDIA NVENC</option></select></label>
+        <label class="checkbox"><input id="selfHeal" type="checkbox"> Self-heal stalled HLS encoders</label>
+        <label>Stall threshold (sec)<input id="stallSeconds" type="number" min="8" max="120"></label>
+        <label class="checkbox"><input id="disableRetro" type="checkbox"> Disable CRT effects when degraded</label>
+        <label>Degraded content FPS<input id="degradedFps" type="number" min="1" max="5"></label>
       </div>
-      <button class="button" onclick="saveGeneral()">Save Station Settings</button>
+      <div class="toolbar"><button class="button" id="savePerf">Save Performance Policy</button><button class="button ghost" id="restartAll">Restart All Encoders</button></div>
+      <div id="encoders" class="status-grid top-gap"></div>
     </article>
 
     <article class="card">
-      <h2>Background Audio</h2>
-      <p>Mount your MP3/FLAC/WAV files into <code>/music</code>. The playlist is rebuilt whenever the stream restarts.</p>
-      <div class="form-grid">
-        <label class="checkbox"><input id="musicEnabled" type="checkbox"> Enable music</label>
-        <label class="checkbox"><input id="musicShuffle" type="checkbox"> Shuffle playlist</label>
-        <label>Volume <span id="volumeValue">30%</span>
-          <input id="musicVolume" type="range" min="0" max="100" step="1">
-        </label>
-      </div>
-      <button class="button" onclick="saveGeneral()">Save Audio Settings</button>
+      <div class="card-head"><div><h2>Profiles</h2><p>Quickly switch between tested presentation/performance combinations.</p></div><span class="pill">QoL</span></div>
+      <div id="profiles" class="profile-grid"></div>
+      <div class="toolbar top-gap"><input id="profileName" placeholder="My profile" style="max-width:220px;margin:0"><button class="button ghost" id="saveProfile">Save Current Profile</button></div>
     </article>
   </section>
 
   <section class="grid two">
     <article class="card">
-      <div class="card-head"><div><h2>Station Logo</h2><p>Upload a PNG/JPEG/WebP logo. WeatherStream converts it to a cached transparent PNG in <code>/config/branding</code>.</p></div><span class="pill">BRANDING</span></div>
-      <div class="form-grid">
-        <label class="checkbox"><input id="logoEnabled" type="checkbox"> Enable station logo</label>
-        <label class="checkbox"><input id="useBuiltinLogo" type="checkbox"> Use built-in RWN logo when no custom logo is uploaded</label>
-        <label>Logo position<select id="logoPosition"><option value="station_id_only">Station ID only</option><option value="top_left">Top left</option><option value="top_right">Top right</option><option value="all">Station ID + top right</option></select></label>
-        <label>Maximum width (px)<input id="logoMaxWidth" type="number" min="64" max="320" step="4"></label>
-        <label class="wide">Upload logo<input id="logoFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
-      </div>
-      <div class="row-actions"><button class="button" onclick="uploadLogo()">Upload Logo</button><button class="button ghost" onclick="deleteLogo()">Remove Logo</button><button class="button ghost" onclick="saveGeneral()">Save Logo Settings</button></div>
-      <img id="logoPreview" src="/branding/logo.png" alt="Station logo preview" style="max-width:220px;max-height:100px;margin-top:14px;object-fit:contain" onerror="this.style.display='none'">
+      <div class="card-head"><div><h2>Data Sources</h2><p>Freshness and errors for services that feed RWN.</p></div><button class="button ghost mini" id="refreshData">Refresh All Data</button></div>
+      <div id="sources" class="status-grid"></div>
     </article>
     <article class="card">
-      <div class="card-head"><div><h2>Maps & City Labels</h2><p>Automatic nearby-city context comes from a cached GeoNames cities5000 index. Map rendering itself never calls GeoNames.</p></div><span class="pill">MAPS</span></div>
-      <div class="form-grid">
-        <label class="checkbox"><input id="autoCityLabels" type="checkbox"> Automatic nearby-city labels</label>
-        <label>Minimum city population<input id="cityMinPopulation" type="number" min="1000" max="1000000" step="1000"></label>
-        <label>Maximum labels<input id="cityMaxLabels" type="number" min="2" max="20" step="1"></label>
-        <label>Search radius (miles)<input id="cityRadiusMiles" type="number" min="25" max="500" step="5"></label>
-        <label class="checkbox"><input id="regionalMapEnabled" type="checkbox"> Full-screen Regional Weather Map</label>
-        <label>Regional map scale<select id="regionalMapView"><option value="local">Local</option><option value="regional">Regional</option><option value="wide">Wide Area</option></select></label>
-        <label class="checkbox"><input id="stormGuidanceEnabled" type="checkbox"> NOAA-model Storm Potential slide</label>
-        <label>Storm guidance refresh (seconds)<input id="stormGuidanceRefresh" type="number" min="300" max="3600" step="60"></label>
+      <div class="card-head"><div><h2>Maintenance & Recovery</h2><p>Back up persistent configuration, clean transient data, and download one troubleshooting bundle.</p></div><span class="pill">SYSTEM</span></div>
+      <div class="toolbar">
+        <a class="button" href="/api/backup">Download Backup</a>
+        <label class="button ghost file-button">Restore Backup<input id="restoreFile" type="file" accept="application/zip,.zip"></label>
+        <a class="button ghost" href="/api/diagnostics">Diagnostics Bundle</a>
       </div>
-      <button class="button" onclick="saveGeneral()">Save Map/Data Settings</button>
-      <p class="hint top-gap">Automatic cities: GeoNames CC BY 4.0. Storm Potential is model guidance, not observed lightning and never replaces NWS warnings.</p>
-    </article>
-  </section>
-
-
-  <section class="card">
-    <div class="card-head">
-      <div>
-        <h2>Presentation</h2>
-        <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
-      </div>
-      <span class="pill">v0.1.8.1</span>
-    </div>
-    <div class="form-grid">
-      <label>Transition
-        <select id="transitionType">
-          <option value="crossfade">Crossfade</option>
-          <option value="wipe">Horizontal wipe</option>
-          <option value="wipe_vertical">Vertical wipe</option>
-          <option value="slide_left">Slide left</option>
-          <option value="slide_up">Slide up</option>
-          <option value="venetian">Venetian blinds</option>
-          <option value="dissolve">Fine dissolve</option>
-          <option value="pixel_dissolve">Pixel dissolve</option>
-          <option value="crt_fade">CRT power fade</option>
-          <option value="cut">Hard cut</option>
-        </select>
-      </label>
-      <label>Transition seconds<input id="transitionSeconds" type="number" min="0" max="2" step="0.05"></label>
-      <label class="checkbox"><input id="showStationId" type="checkbox"> Show station ID bumper</label>
-      <label class="checkbox"><input id="backgroundMotion" type="checkbox"> Animated theme background</label>
-      <label class="wide">Slide order <span class="hint">v0.1.8.1 slides include condition_focus, weather_history and spc_outlook, plus all existing radar/map slides.</span>
-        <input id="slideSequence">
-      </label>
-      <label>Station ID<input id="durStation" type="number" min="3" max="20"></label>
-      <label>Current<input id="durCurrent" type="number" min="3" max="60"></label>
-      <label>Today<input id="durToday" type="number" min="3" max="60"></label>
-      <label>NWS Forecast<input id="durNwsForecast" type="number" min="3" max="60"></label>
-      <label>Temperature Trend<input id="durTemperatureTrend" type="number" min="3" max="60"></label>
-      <label>Hourly<input id="durHourly" type="number" min="3" max="60"></label>
-      <label>Rain Chances<input id="durPrecipitation" type="number" min="3" max="60"></label>
-      <label>Storm Potential<input id="durStormOutlook" type="number" min="3" max="60"></label>
-      <label>SPC Outlook<input id="durSpcOutlook" type="number" min="3" max="60"></label>
-      <label>Condition Focus<input id="durConditionFocus" type="number" min="3" max="60"></label>
-      <label>24-Hour History<input id="durWeatherHistory" type="number" min="3" max="60"></label>
-      <label>Local Radar<input id="durRadarLocal" type="number" min="3" max="60"></label>
-      <label>Regional Radar<input id="durRadarRegional" type="number" min="3" max="60"></label>
-      <label>Wide Radar<input id="durRadarWide" type="number" min="3" max="60"></label>
-      <label>7-Day<input id="durSeven" type="number" min="3" max="60"></label>
-      <label>Regional Weather Map<input id="durRegionalMap" type="number" min="3" max="60"></label>
-      <label>Regional Conditions<input id="durRegional" type="number" min="3" max="60"></label>
-      <label>Almanac<input id="durAlmanac" type="number" min="3" max="60"></label>
-    </div>
-    <button class="button" onclick="saveGeneral()">Save Presentation</button>
-  </section>
-
-  <section class="grid two">
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h2>Analog / CRT Effects</h2>
-          <p>Optional post-processing for a more authentic analog-cable presentation. Leave disabled for the cleanest image and lowest CPU use.</p>
-        </div>
-        <span class="pill">NOSTALGIA</span>
-      </div>
-      <div class="form-grid">
-        <label class="checkbox"><input id="retroEnabled" type="checkbox"> Enable analog/CRT effects</label>
-        <label>Scanlines <span class="hint">0.00–0.65</span><input id="retroScanlines" type="number" min="0" max="0.65" step="0.01"></label>
-        <label>Video noise <span class="hint">0.00–0.25</span><input id="retroNoise" type="number" min="0" max="0.25" step="0.005"></label>
-        <label>Bloom <span class="hint">0.00–0.50</span><input id="retroBloom" type="number" min="0" max="0.5" step="0.01"></label>
-        <label>Soft edges <span class="hint">0.00–0.60</span><input id="retroSoftEdges" type="number" min="0" max="0.6" step="0.01"></label>
-        <label>RGB color bleed (px)<input id="retroColorBleed" type="number" min="0" max="6" step="1"></label>
-        <label>Horizontal jitter (px)<input id="retroJitter" type="number" min="0" max="5" step="1"></label>
-      </div>
-      <button class="button" onclick="saveGeneral()">Save Analog Effects</button>
-    </article>
-
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h2>Scheduled Local Updates</h2>
-          <p>Run a short-form local-weather block at classic cable-style minute marks. Severe Weather Takeover always has priority.</p>
-        </div>
-        <span class="pill">CLOCKED</span>
-      </div>
-      <div class="form-grid">
-        <label class="checkbox"><input id="scheduledEnabled" type="checkbox"> Enable scheduled updates</label>
-        <label>Minute marks <span class="hint">Comma separated, 0–59</span><input id="scheduledMarks" placeholder="8,18,28,38,48,58"></label>
-        <label>Update window (seconds)<input id="scheduledWindow" type="number" min="30" max="300" step="10"></label>
-        <label class="wide">Local-update sequence <span class="hint">Example: station_id,current,radar_local,today,seven_day</span><input id="scheduledSequence"></label>
-      </div>
-      <button class="button" onclick="saveGeneral()">Save Local Update Schedule</button>
-    </article>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <div>
-        <h2>ZIP Codes</h2>
-        <p>Every ZIP code automatically gets its own RWN Local IPTV channel. The primary ZIP additionally centers the shared RWN Radar and RWN Severe Weather channels.</p>
-      </div>
-      <button class="button ghost" onclick="manualRefresh()">Refresh Weather</button>
-    </div>
-    <div class="zip-add">
-      <input id="zipInput" inputmode="numeric" maxlength="5" placeholder="5-digit ZIP code">
-      <button class="button" onclick="addZip()">Add ZIP</button>
-    </div>
-    <div id="locations" class="locations"></div>
-  </section>
-
-
-  <section class="card">
-    <div class="card-head"><div><h2>RWN Network Channels</h2><p>v0.1.8.1 automatically builds one HLS channel per ZIP plus dedicated Radar and Severe Weather channels. All channels are published in <code>/playlist.m3u</code> and <code>/guide.xml</code>.</p></div><span class="pill">MULTI-CHANNEL</span></div>
-    <div class="form-grid">
-      <label class="checkbox"><input id="perZipChannels" type="checkbox"> One Local channel per ZIP</label>
-      <label class="checkbox"><input id="radarChannelEnabled" type="checkbox"> RWN Radar channel</label>
-      <label class="checkbox"><input id="severeChannelEnabled" type="checkbox"> RWN Severe Weather channel</label>
-      <label>Maximum ZIP channels<input id="maxZipChannels" type="number" min="1" max="24" step="1"></label>
-      <label class="wide">ZIP-channel sequence <span class="hint">Radar is intentionally on the shared RWN Radar channel.</span><input id="zipChannelSequence"></label>
-      <label class="wide">RWN Radar sequence<input id="radarChannelSequence"></label>
-      <label class="wide">RWN Severe idle sequence<input id="severeChannelSequence"></label>
-    </div>
-    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Channel Settings</button><button class="button ghost" onclick="restartStream()">Restart All Channels</button></div>
-    <div class="locations top-gap" id="channelGrid"></div>
-  </section>
-
-  <section class="card">
-    <div class="card-head"><div><h2>Realtime Video Performance</h2><p>v0.1.8.1 uses a lower-cost multi-channel profile and reports whether each HLS producer is actually keeping up with wall-clock time.</p></div><span class="pill">PERFORMANCE</span></div>
-    <div class="form-grid">
-      <label>Pipe FPS <span class="hint">Frames sent to FFmpeg each second.</span><input id="perfRenderFps" type="number" min="2" max="15" step="1"></label>
-      <label>Content FPS <span class="hint">Expensive Pillow redraws per second; repeated frames fill the pipe FPS.</span><input id="perfContentFps" type="number" min="1" max="15" step="1"></label>
-      <label>Output FPS<input id="perfOutputFps" type="number" min="5" max="30" step="1"></label>
-      <label>Encoder preset<select id="perfPreset"><option value="ultrafast">ultrafast</option><option value="superfast">superfast</option><option value="veryfast">veryfast</option><option value="faster">faster</option><option value="fast">fast</option></select></label>
-      <label>Video bitrate <span class="hint">e.g. 2000k</span><input id="perfBitrate" maxlength="12"></label>
-      <label>HLS segment seconds<input id="perfHlsSegment" type="number" min="2" max="10" step="1"></label>
-      <label>HLS playlist segments<input id="perfHlsList" type="number" min="4" max="30" step="1"></label>
-      <label>Preview write interval (sec)<input id="perfPreviewInterval" type="number" min="1" max="30" step="1"></label>
-    </div>
-    <p class="hint top-gap">Recommended multi-channel defaults: 5 pipe FPS, 3 content FPS, 15 output FPS, superfast, 2000k, 3-second HLS segments, 10-segment window. Higher values increase CPU usage.</p>
-    <button class="button" onclick="saveGeneral()">Save Performance Settings</button>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <div>
-        <h2>Radar Studio</h2>
-        <p>Local, Regional, and Wide Area radar now support NWS warning polygons and optional distance rings centered on the primary ZIP.</p>
-      </div>
-      <span class="pill" id="radarState">Checking…</span>
-    </div>
-
-    <div class="form-grid">
-      <label class="checkbox"><input id="radarEnabled" type="checkbox"> Enable radar system</label>
-      <label>Loop frames<input id="radarFrames" type="number" min="3" max="12" step="1"></label>
-      <label>Seconds per frame<input id="radarFrameSeconds" type="number" min="0.25" max="3" step="0.05"></label>
-      <label>Radar refresh (seconds)<input id="radarRefresh" type="number" min="120" step="30"></label>
-      <label>Radar opacity <span class="hint">0.10–1.00</span><input id="radarOpacity" type="number" min="0.10" max="1" step="0.05"></label>
-      <label>Storm contrast <span class="hint">0.50–2.50×</span><input id="radarContrast" type="number" min="0.50" max="2.50" step="0.05"></label>
-      <label class="checkbox"><input id="radarBoundaries" type="checkbox"> County/state boundary overlay</label>
-      <label class="checkbox"><input id="radarCities" type="checkbox"> Label configured cities</label>
-      <label class="checkbox"><input id="radarRangeRings" type="checkbox"> Radar distance rings</label>
-      <label>Range rings (miles) <span class="hint">Comma separated</span><input id="radarRangeRingMiles" placeholder="25,50,100"></label>
-      <label class="checkbox"><input id="radarSweep" type="checkbox"> Visual radar sweep</label>
-      <label>Sweep period (seconds)<input id="radarSweepSeconds" type="number" min="2" max="20" step="0.5"></label>
-    </div>
-
-    <div class="grid three top-gap">
-      <article class="subcard">
-        <h3>Local</h3>
-        <label class="checkbox"><input id="radarLocalEnabled" type="checkbox"> Enable Local Radar</label>
-        <label>Zoom
-          <select id="radarLocalZoom">
-            <option value="5">5 — Regional/local</option><option value="6">6 — Local</option><option value="7">7 — Close local</option>
-          </select>
-        </label>
-      </article>
-      <article class="subcard">
-        <h3>Regional</h3>
-        <label class="checkbox"><input id="radarRegionalEnabled" type="checkbox"> Enable Regional Radar</label>
-        <label>Zoom
-          <select id="radarRegionalZoom">
-            <option value="4">4 — Wide region</option><option value="5">5 — Region</option><option value="6">6 — Near region</option>
-          </select>
-        </label>
-      </article>
-      <article class="subcard">
-        <h3>Wide Area</h3>
-        <label class="checkbox"><input id="radarWideEnabled" type="checkbox"> Enable Wide Area Radar</label>
-        <label>Zoom
-          <select id="radarWideZoom">
-            <option value="3">3 — Very wide</option><option value="4">4 — Wide</option><option value="5">5 — Regional</option>
-          </select>
-        </label>
-      </article>
-    </div>
-
-    <button class="button top-gap" onclick="saveGeneral()">Save Radar Settings</button>
-    <button class="button ghost top-gap" onclick="manualRefresh()">Refresh Radar Now</button>
-    <p class="hint top-gap">Radar: RainViewer • Basemap: © OpenStreetMap contributors • Boundaries: U.S. Census Bureau TIGERweb. Boundary and map layers are cached so normal video rendering does not call external services.</p>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <div>
-        <h2>Severe Weather</h2>
-        <p>Automatic NWS warning polygons, alert ticker takeover, dedicated alert radar, and a locally generated attention chime.</p>
-      </div>
-      <span class="pill" id="takeoverState">NORMAL</span>
-    </div>
-    <div class="form-grid">
-      <label class="checkbox"><input id="alertPolygons" type="checkbox"> Draw NWS alert polygons on radar</label>
-      <label class="checkbox"><input id="takeoverEnabled" type="checkbox"> Severe Weather Takeover mode</label>
-      <label>Takeover threshold
-        <select id="takeoverSeverity">
-          <option value="Extreme">Extreme only</option>
-          <option value="Severe">Severe + Extreme</option>
-          <option value="Moderate">Moderate + Severe + Extreme</option>
-        </select>
-      </label>
-      <label class="checkbox"><input id="tickerTakeover" type="checkbox"> Alert takes over bottom ticker</label>
-      <label class="checkbox"><input id="alertChime" type="checkbox"> Play alert chime for new severe alert</label>
-      <label>Alert chime volume <span class="hint">0.00–1.00</span><input id="alertChimeVolume" type="number" min="0" max="1" step="0.05"></label>
-      <label class="wide">Takeover sequence <span class="hint">Allowed: alert, alert_radar, current, nws_forecast, radar_local, today, hourly</span>
-        <input id="takeoverSequence">
-      </label>
-      <label>Alert screen<input id="durAlert" type="number" min="3" max="60"></label>
-      <label>Alert radar<input id="durAlertRadar" type="number" min="3" max="60"></label>
-    </div>
-    <button class="button" onclick="saveGeneral()">Save Severe Weather Settings</button>
-  </section>
-
-
-  <section class="grid two">
-    <article class="card">
-      <div class="card-head"><div><h2>Broadcast Intelligence</h2><p>Condition-driven slide selection and daypart programming make RWN adapt the channel to the weather and time of day.</p></div><span class="pill">DIRECTOR</span></div>
-      <div class="form-grid">
-        <label class="checkbox"><input id="smartEnabled" type="checkbox"> Enable smart programming</label>
-        <label>Rain slide threshold (%)<input id="smartRain" type="number" min="0" max="100"></label>
-        <label>Storm slide threshold (%)<input id="smartStorm" type="number" min="0" max="100"></label>
-        <label>Heat focus threshold (°F)<input id="smartHeat" type="number" min="70" max="130"></label>
-        <label>Cold focus threshold (°F)<input id="smartCold" type="number" min="-40" max="60"></label>
-        <label class="checkbox"><input id="daypartsEnabled" type="checkbox"> Enable daypart programming</label>
-        <label>Morning starts<input id="morningStart" type="number" min="0" max="23"></label>
-        <label>Daytime starts<input id="daytimeStart" type="number" min="0" max="23"></label>
-        <label>Evening starts<input id="eveningStart" type="number" min="0" max="23"></label>
-        <label>Overnight starts<input id="overnightStart" type="number" min="0" max="23"></label>
-        <label class="wide">Morning sequence<input id="seqMorning"></label>
-        <label class="wide">Daytime sequence<input id="seqDaytime"></label>
-        <label class="wide">Evening sequence<input id="seqEvening"></label>
-        <label class="wide">Overnight sequence<input id="seqOvernight"></label>
-      </div>
-      <button class="button" onclick="saveGeneral()">Save Broadcast Director</button>
-    </article>
-    <article class="card">
-      <div class="card-head"><div><h2>Forecast Intelligence</h2><p>SPC outlooks use the official NOAA/NWS outlook map service. Local history is stored in SQLite under /config.</p></div><span class="pill">DATA</span></div>
-      <div class="form-grid">
-        <label class="checkbox"><input id="spcEnabled" type="checkbox"> Enable SPC Day 1–3 outlook</label>
-        <label>SPC refresh (seconds)<input id="spcRefresh" type="number" min="300" max="3600" step="60"></label>
-        <label>Smart-programming minimum SPC risk<select id="spcMinimum"><option value="TSTM">General Thunder</option><option value="MRGL">Marginal</option><option value="SLGT">Slight</option><option value="ENH">Enhanced</option><option value="MDT">Moderate</option><option value="HIGH">High</option></select></label>
-        <label class="checkbox"><input id="historyEnabled" type="checkbox"> Store local weather history</label>
-        <label>History retention (days)<input id="historyRetention" type="number" min="1" max="3650"></label>
-        <label>Cache retention (hours)<input id="cacheRetention" type="number" min="1" max="720"></label>
-      </div>
-      <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Intelligence Settings</button><button class="button ghost" onclick="cleanCache()">Clean Cache Now</button></div>
-      <p class="hint top-gap">Jellyfin XMLTV: <code>/guide.xml</code> • M3U: <code>/playlist.m3u</code></p>
-    </article>
-  </section>
-
-  <section class="card">
-    <div class="card-head"><div><h2>Data Source Diagnostics</h2><p>Each upstream source reports its most recent success/error so a stale radar or forecast can be identified without digging through container logs.</p></div><span class="pill">HEALTH</span></div>
-    <div class="status-grid" id="sourceGrid"></div>
-  </section>
-
-  <section class="card">
-    <div class="card-head"><div><h2>Preview & Test Console</h2><p>Preview individual slides without changing the live channel. TEST warning graphics are clearly marked and never enter the real alert feed.</p></div><span class="pill">TEST MODE</span></div>
-    <div class="row-actions">
-      <button class="button ghost" onclick="previewSlide('station_id')">Station ID</button><button class="button ghost" onclick="previewSlide('current')">Current</button><button class="button ghost" onclick="previewSlide('condition_focus')">Condition Focus</button><button class="button ghost" onclick="previewSlide('weather_history')">24h History</button><button class="button ghost" onclick="previewSlide('spc_outlook')">SPC Outlook</button><button class="button ghost" onclick="previewSlide('radar_local')">Local Radar</button><button class="button danger" onclick="previewTestAlert('alert')">TEST Warning</button><button class="button danger" onclick="previewTestAlert('alert_radar')">TEST Warning Radar</button>
-    </div>
-  </section>
-
-  <section class="grid two">
-    <article class="card preview-card">
-      <div class="card-head">
-        <div><h2>Renderer Preview</h2><p>Updates once per second.</p></div>
-        <span class="pill" id="streamState">Checking…</span>
-      </div>
-      <img id="preview" class="preview" src="/preview.jpg" alt="WeatherStream preview">
-    </article>
-
-    <article class="card">
-      <h2>Advanced Refresh</h2>
-      <div class="form-grid">
-        <label>Weather refresh (seconds)<input id="weatherRefresh" type="number" min="120" step="30"></label>
-        <label>Alert refresh (seconds)<input id="alertRefresh" type="number" min="30" step="30"></label>
-        <label class="wide">NWS User-Agent<input id="nwsUserAgent"></label>
-      </div>
-      <button class="button" onclick="saveGeneral()">Save Refresh Settings</button>
-      <button class="button ghost" onclick="restartStream()">Restart Video Stream</button>
-      <div class="status-grid top-gap" id="statusGrid"></div>
-      <div id="lastError" class="error-box hidden"></div>
+      <div class="toolbar top-gap"><button class="button ghost" id="cleanCache">Clean Cache</button><button class="button ghost" id="vacuumDb">Vacuum History DB</button></div>
+      <div id="maintenance" class="status-grid top-gap"></div>
     </article>
   </section>
 </main>
 <script>
-let settings = null;
-let previewHoldUntil = 0;
-const flash = document.getElementById('flash');
-function notify(msg, bad=false) {
-  flash.textContent = msg;
-  flash.className = 'flash ' + (bad ? 'bad' : 'ok');
-  setTimeout(() => flash.className = 'flash hidden', 3500);
-}
-async function jfetch(url, options={}) {
-  const r = await fetch(url, options);
-  let data = {};
-  try { data = await r.json(); } catch(e) {}
-  if (!r.ok) throw new Error(data.detail || `Request failed: ${r.status}`);
-  return data;
-}
-async function loadSettings() {
-  settings = await jfetch('/api/settings');
-  stationName.value = settings.station_name || '';
-  stationCallsign.value = settings.station_callsign || '';
-  stationSlogan.value = settings.station_slogan || '';
-  serviceArea.value = settings.service_area || '';
-  theme.value = settings.theme || 'local-90s';
-  publicBaseUrl.value = settings.public_base_url || '';
-  logoEnabled.checked = !!settings.branding?.logo_enabled;
-  useBuiltinLogo.checked = settings.branding?.use_builtin_logo !== false;
-  logoPosition.value = settings.branding?.logo_position || 'station_id_only';
-  logoMaxWidth.value = settings.branding?.logo_max_width || 170;
-  autoCityLabels.checked = settings.maps?.auto_city_labels !== false;
-  cityMinPopulation.value = settings.maps?.city_min_population || 5000;
-  cityMaxLabels.value = settings.maps?.city_max_labels || 10;
-  cityRadiusMiles.value = settings.maps?.city_radius_miles || 180;
-  regionalMapEnabled.checked = settings.maps?.regional_map_enabled !== false;
-  regionalMapView.value = settings.maps?.regional_map_view || 'regional';
-  stormGuidanceEnabled.checked = settings.storm_guidance?.enabled !== false;
-  stormGuidanceRefresh.value = settings.storm_guidance?.refresh_seconds || 900;
-  logoPreview.style.display = '';
-  logoPreview.src = '/branding/logo.png?t=' + Date.now();
-  musicEnabled.checked = !!settings.music.enabled;
-  musicShuffle.checked = !!settings.music.shuffle;
-  musicVolume.value = Math.round((settings.music.volume || 0) * 100);
-  volumeValue.textContent = musicVolume.value + '%';
-  weatherRefresh.value = settings.weather_refresh_seconds || 600;
-  alertRefresh.value = settings.alert_refresh_seconds || 60;
-  nwsUserAgent.value = settings.nws_user_agent || '';
-  radarEnabled.checked = settings.radar?.enabled !== false;
-  radarFrames.value = settings.radar?.frame_count || 8;
-  radarFrameSeconds.value = settings.radar?.frame_seconds || 0.8;
-  radarRefresh.value = settings.radar?.refresh_seconds || 300;
-  radarOpacity.value = settings.radar?.opacity ?? 0.82;
-  radarContrast.value = settings.radar?.contrast ?? 1.25;
-  radarBoundaries.checked = settings.radar?.show_boundaries !== false;
-  radarCities.checked = settings.radar?.show_city_markers !== false;
-  radarRangeRings.checked = settings.radar?.show_range_rings !== false;
-  radarRangeRingMiles.value = (settings.radar?.range_rings_miles || [25,50,100]).join(',');
-  radarSweep.checked = settings.radar?.sweep_enabled !== false;
-  radarSweepSeconds.value = settings.radar?.sweep_seconds ?? 6;
-  radarLocalEnabled.checked = settings.radar?.views?.local?.enabled !== false;
-  radarLocalZoom.value = String(settings.radar?.views?.local?.zoom || 7);
-  radarRegionalEnabled.checked = settings.radar?.views?.regional?.enabled !== false;
-  radarRegionalZoom.value = String(settings.radar?.views?.regional?.zoom || 6);
-  radarWideEnabled.checked = settings.radar?.views?.wide?.enabled !== false;
-  radarWideZoom.value = String(settings.radar?.views?.wide?.zoom || 5);
-  transitionType.value = settings.presentation?.transition || 'crossfade';
-  transitionSeconds.value = settings.presentation?.transition_seconds ?? 0.75;
-  showStationId.checked = settings.presentation?.show_station_id !== false;
-  backgroundMotion.checked = settings.presentation?.background_motion !== false;
-  const retro = settings.presentation?.retro_effects || {};
-  retroEnabled.checked = !!retro.enabled;
-  retroScanlines.value = retro.scanlines ?? 0.14;
-  retroNoise.value = retro.noise ?? 0.025;
-  retroBloom.value = retro.bloom ?? 0.10;
-  retroSoftEdges.value = retro.soft_edges ?? 0.12;
-  retroColorBleed.value = retro.color_bleed_px ?? 1;
-  retroJitter.value = retro.horizontal_jitter_px ?? 1;
-  const scheduled = settings.presentation?.scheduled_updates || {};
-  scheduledEnabled.checked = !!scheduled.enabled;
-  scheduledMarks.value = (scheduled.minute_marks || [8,18,28,38,48,58]).join(',');
-  scheduledWindow.value = scheduled.window_seconds ?? 120;
-  scheduledSequence.value = (scheduled.sequence || ['station_id','current','radar_local','today','seven_day']).join(',');
-  slideSequence.value = (settings.presentation?.sequence || []).join(',');
-  durStation.value = settings.slides?.station_id || 6;
-  durCurrent.value = settings.slides?.current || 12;
-  durToday.value = settings.slides?.today || 12;
-  durNwsForecast.value = settings.slides?.nws_forecast || 16;
-  durTemperatureTrend.value = settings.slides?.temperature_trend || 14;
-  durHourly.value = settings.slides?.hourly || 15;
-  durPrecipitation.value = settings.slides?.precipitation || 12;
-  durStormOutlook.value = settings.slides?.storm_outlook || 14;
-  durSpcOutlook.value = settings.slides?.spc_outlook || 13;
-  durConditionFocus.value = settings.slides?.condition_focus || 10;
-  durWeatherHistory.value = settings.slides?.weather_history || 14;
-  durRadarLocal.value = settings.slides?.radar_local || settings.slides?.radar || 16;
-  durRadarRegional.value = settings.slides?.radar_regional || settings.slides?.radar || 16;
-  durRadarWide.value = settings.slides?.radar_wide || settings.slides?.radar || 16;
-  durSeven.value = settings.slides?.seven_day || 15;
-  durRegionalMap.value = settings.slides?.regional_map || 16;
-  durRegional.value = settings.slides?.regional || 12;
-  durAlmanac.value = settings.slides?.almanac || 12;
-  alertPolygons.checked = settings.alerts?.show_polygons !== false;
-  takeoverEnabled.checked = settings.alerts?.takeover_enabled !== false;
-  takeoverSeverity.value = settings.alerts?.takeover_min_severity || 'Severe';
-  tickerTakeover.checked = settings.alerts?.ticker_takeover !== false;
-  alertChime.checked = settings.alerts?.chime_enabled !== false;
-  alertChimeVolume.value = settings.alerts?.chime_volume ?? 0.65;
-  takeoverSequence.value = (settings.alerts?.takeover_sequence || []).join(',');
-  durAlert.value = settings.slides?.alert || 14;
-  durAlertRadar.value = settings.slides?.alert_radar || 18;
-
-  smartEnabled.checked = settings.smart_programming?.enabled !== false;
-  smartRain.value = settings.smart_programming?.rain_threshold ?? 20;
-  smartStorm.value = settings.smart_programming?.storm_threshold ?? 15;
-  smartHeat.value = settings.smart_programming?.heat_threshold ?? 95;
-  smartCold.value = settings.smart_programming?.cold_threshold ?? 32;
-  daypartsEnabled.checked = settings.dayparts?.enabled !== false;
-  morningStart.value = settings.dayparts?.morning_start ?? 5; daytimeStart.value = settings.dayparts?.daytime_start ?? 10; eveningStart.value = settings.dayparts?.evening_start ?? 17; overnightStart.value = settings.dayparts?.overnight_start ?? 22;
-  const dseq = settings.dayparts?.sequences || {};
-  seqMorning.value = (dseq.morning || []).join(','); seqDaytime.value = (dseq.daytime || []).join(','); seqEvening.value = (dseq.evening || []).join(','); seqOvernight.value = (dseq.overnight || []).join(',');
-  spcEnabled.checked = settings.spc?.enabled !== false; spcRefresh.value = settings.spc?.refresh_seconds ?? 900; spcMinimum.value = settings.spc?.minimum_smart_risk || 'MRGL';
-  historyEnabled.checked = settings.history?.enabled !== false; historyRetention.value = settings.history?.retention_days ?? 90; cacheRetention.value = settings.cache?.retention_hours ?? 48;
-  perZipChannels.checked = settings.channels?.per_zip_enabled !== false;
-  radarChannelEnabled.checked = settings.channels?.radar_enabled !== false;
-  severeChannelEnabled.checked = settings.channels?.severe_enabled !== false;
-  maxZipChannels.value = settings.channels?.max_zip_channels ?? 12;
-  zipChannelSequence.value = (settings.channels?.zip_sequence || []).join(',');
-  radarChannelSequence.value = (settings.channels?.radar_sequence || []).join(',');
-  severeChannelSequence.value = (settings.channels?.severe_idle_sequence || []).join(',');
-  perfRenderFps.value = settings.video?.render_fps ?? 5;
-  perfContentFps.value = settings.video?.content_fps ?? 3;
-  perfOutputFps.value = settings.video?.output_fps ?? 15;
-  perfPreset.value = settings.video?.encoder_preset || 'superfast';
-  perfBitrate.value = settings.video?.bitrate || '2000k';
-  perfHlsSegment.value = settings.video?.hls_segment_seconds ?? 3;
-  perfHlsList.value = settings.video?.hls_list_size ?? 10;
-  perfPreviewInterval.value = settings.video?.preview_interval_seconds ?? 5;
-  renderLocations();
-}
-musicVolume.addEventListener('input', () => volumeValue.textContent = musicVolume.value + '%');
-
-function renderLocations() {
-  const root = document.getElementById('locations');
-  if (!settings.locations.length) {
-    root.innerHTML = '<div class="empty">No ZIP codes configured. Add one above to start local weather.</div>';
-    return;
-  }
-  root.innerHTML = settings.locations.map(loc => `
-    <div class="location-row ${loc.id === settings.primary_location_id ? 'primary' : ''}">
-      <div>
-        <strong>${loc.name}, ${loc.admin1}</strong>
-        <span>${loc.postal_code} • ${loc.latitude.toFixed(3)}, ${loc.longitude.toFixed(3)}</span><code>/live/zip-${loc.postal_code}/index.m3u8</code>
-      </div>
-      <div class="row-actions">
-        ${loc.id === settings.primary_location_id ? '<span class="pill ok">PRIMARY</span>' : `<button class="button mini ghost" onclick="setPrimary('${loc.id}')">Make Primary</button>`}
-        <button class="button mini danger" onclick="removeZip('${loc.id}')">Remove</button>
-      </div>
-    </div>`).join('');
-}
-
-async function addZip() {
-  const postal = zipInput.value.trim();
-  if (!/^\d{5}$/.test(postal)) return notify('Enter a 5-digit U.S. ZIP code.', true);
-  try {
-    await jfetch('/api/locations', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({postal_code:postal})});
-    zipInput.value = '';
-    await loadSettings();
-    notify('ZIP code added. Weather refresh requested.');
-  } catch(e) { notify(e.message, true); }
-}
-async function removeZip(id) {
-  try { await jfetch('/api/locations/'+id, {method:'DELETE'}); await loadSettings(); notify('Location removed.'); }
-  catch(e) { notify(e.message, true); }
-}
-async function setPrimary(id) {
-  try { await jfetch(`/api/locations/${id}/primary`, {method:'POST'}); await loadSettings(); notify('Primary location changed.'); }
-  catch(e) { notify(e.message, true); }
-}
-async function saveGeneral() {
-  const body = {
-    station_name: stationName.value.trim() || 'Roller Weather Network',
-    station_callsign: stationCallsign.value.trim(),
-    station_slogan: stationSlogan.value.trim(),
-    service_area: serviceArea.value.trim(),
-    theme: theme.value,
-    public_base_url: publicBaseUrl.value.trim(),
-    branding: {
-      logo_enabled: logoEnabled.checked,
-      use_builtin_logo: useBuiltinLogo.checked,
-      logo_position: logoPosition.value,
-      logo_max_width: Number(logoMaxWidth.value || 170)
-    },
-    maps: {
-      auto_city_labels: autoCityLabels.checked,
-      city_min_population: Number(cityMinPopulation.value || 5000),
-      city_max_labels: Number(cityMaxLabels.value || 10),
-      city_radius_miles: Number(cityRadiusMiles.value || 180),
-      regional_map_enabled: regionalMapEnabled.checked,
-      regional_map_view: regionalMapView.value
-    },
-    storm_guidance: {enabled: stormGuidanceEnabled.checked, refresh_seconds: Number(stormGuidanceRefresh.value || 900)},
-    spc: {enabled: spcEnabled.checked, refresh_seconds: Number(spcRefresh.value || 900), minimum_smart_risk: spcMinimum.value},
-    history: {enabled: historyEnabled.checked, retention_days: Number(historyRetention.value || 90)},
-    smart_programming: {enabled: smartEnabled.checked, rain_threshold: Number(smartRain.value || 20), storm_threshold: Number(smartStorm.value || 15), heat_threshold: Number(smartHeat.value || 95), cold_threshold: Number(smartCold.value || 32)},
-    dayparts: {enabled: daypartsEnabled.checked, morning_start: Number(morningStart.value || 5), daytime_start: Number(daytimeStart.value || 10), evening_start: Number(eveningStart.value || 17), overnight_start: Number(overnightStart.value || 22), sequences: {morning: seqMorning.value.split(',').map(x=>x.trim()).filter(Boolean), daytime: seqDaytime.value.split(',').map(x=>x.trim()).filter(Boolean), evening: seqEvening.value.split(',').map(x=>x.trim()).filter(Boolean), overnight: seqOvernight.value.split(',').map(x=>x.trim()).filter(Boolean)}},
-    cache: {retention_hours: Number(cacheRetention.value || 48), auto_cleanup: true},
-    channels: {
-      per_zip_enabled: perZipChannels.checked,
-      radar_enabled: radarChannelEnabled.checked,
-      severe_enabled: severeChannelEnabled.checked,
-      max_zip_channels: Number(maxZipChannels.value || 12),
-      zip_sequence: zipChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
-      radar_sequence: radarChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean),
-      severe_idle_sequence: severeChannelSequence.value.split(',').map(x=>x.trim()).filter(Boolean)
-    },
-    video: {
-      render_fps: Number(perfRenderFps.value || 5),
-      content_fps: Number(perfContentFps.value || 3),
-      output_fps: Number(perfOutputFps.value || 15),
-      encoder_preset: perfPreset.value || 'superfast',
-      bitrate: perfBitrate.value.trim() || '2000k',
-      hls_segment_seconds: Number(perfHlsSegment.value || 3),
-      hls_list_size: Number(perfHlsList.value || 10),
-      preview_interval_seconds: Number(perfPreviewInterval.value || 5)
-    },
-    weather_refresh_seconds: Number(weatherRefresh.value || 600),
-    alert_refresh_seconds: Number(alertRefresh.value || 60),
-    nws_user_agent: nwsUserAgent.value.trim(),
-    music: {
-      enabled: musicEnabled.checked,
-      shuffle: musicShuffle.checked,
-      volume: Number(musicVolume.value)/100
-    },
-    radar: {
-      enabled: radarEnabled.checked,
-      frame_count: Number(radarFrames.value || 8),
-      frame_seconds: Number(radarFrameSeconds.value || 0.8),
-      refresh_seconds: Number(radarRefresh.value || 300),
-      opacity: Number(radarOpacity.value || 0.82),
-      contrast: Number(radarContrast.value || 1.25),
-      show_boundaries: radarBoundaries.checked,
-      show_city_markers: radarCities.checked,
-      show_range_rings: radarRangeRings.checked,
-      range_rings_miles: radarRangeRingMiles.value.split(',').map(x => Number(x.trim())).filter(x => Number.isFinite(x) && x > 0),
-      sweep_enabled: radarSweep.checked,
-      sweep_seconds: Number(radarSweepSeconds.value || 6),
-      views: {
-        local: {enabled: radarLocalEnabled.checked, zoom: Number(radarLocalZoom.value || 7)},
-        regional: {enabled: radarRegionalEnabled.checked, zoom: Number(radarRegionalZoom.value || 6)},
-        wide: {enabled: radarWideEnabled.checked, zoom: Number(radarWideZoom.value || 5)}
-      }
-    },
-    alerts: {
-      show_polygons: alertPolygons.checked,
-      takeover_enabled: takeoverEnabled.checked,
-      takeover_min_severity: takeoverSeverity.value,
-      ticker_takeover: tickerTakeover.checked,
-      chime_enabled: alertChime.checked,
-      chime_volume: Number(alertChimeVolume.value || 0.65),
-      takeover_sequence: takeoverSequence.value.split(',').map(x => x.trim()).filter(Boolean)
-    },
-    presentation: {
-      transition: transitionType.value,
-      transition_seconds: Number(transitionSeconds.value || 0),
-      show_station_id: showStationId.checked,
-      station_id_seconds: Number(durStation.value || 6),
-      background_motion: backgroundMotion.checked,
-      retro_effects: {
-        enabled: retroEnabled.checked,
-        scanlines: Number(retroScanlines.value || 0),
-        noise: Number(retroNoise.value || 0),
-        bloom: Number(retroBloom.value || 0),
-        soft_edges: Number(retroSoftEdges.value || 0),
-        color_bleed_px: Number(retroColorBleed.value || 0),
-        horizontal_jitter_px: Number(retroJitter.value || 0)
-      },
-      scheduled_updates: {
-        enabled: scheduledEnabled.checked,
-        minute_marks: scheduledMarks.value.split(',').map(x => Number(x.trim())).filter(x => Number.isInteger(x) && x >= 0 && x <= 59),
-        window_seconds: Number(scheduledWindow.value || 120),
-        sequence: scheduledSequence.value.split(',').map(x => x.trim()).filter(Boolean)
-      },
-      sequence: slideSequence.value.split(',').map(x => x.trim()).filter(Boolean)
-    },
-    slides: {
-      station_id: Number(durStation.value || 6),
-      current: Number(durCurrent.value || 12),
-      today: Number(durToday.value || 12),
-      nws_forecast: Number(durNwsForecast.value || 16),
-      temperature_trend: Number(durTemperatureTrend.value || 14),
-      hourly: Number(durHourly.value || 15),
-      precipitation: Number(durPrecipitation.value || 12),
-      storm_outlook: Number(durStormOutlook.value || 14),
-      spc_outlook: Number(durSpcOutlook.value || 13),
-      condition_focus: Number(durConditionFocus.value || 10),
-      weather_history: Number(durWeatherHistory.value || 14),
-      radar: Number(durRadarLocal.value || 16),
-      radar_local: Number(durRadarLocal.value || 16),
-      radar_regional: Number(durRadarRegional.value || 16),
-      radar_wide: Number(durRadarWide.value || 16),
-      seven_day: Number(durSeven.value || 15),
-      regional_map: Number(durRegionalMap.value || 16),
-      regional: Number(durRegional.value || 12),
-      almanac: Number(durAlmanac.value || 12),
-      alert: Number(durAlert.value || 14),
-      alert_radar: Number(durAlertRadar.value || 18)
-    }
-  };
-  try { settings = await jfetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}); renderLocations(); notify('Settings saved; stream restarting.'); }
-  catch(e) { notify(e.message, true); }
-}
-async function uploadLogo() {
-  const file = logoFile.files?.[0];
-  if (!file) return notify('Choose a logo image first.', true);
-  try {
-    await jfetch('/api/branding/logo', {method:'PUT', headers:{'Content-Type':file.type || 'application/octet-stream'}, body:file});
-    logoPreview.style.display = ''; logoPreview.src = '/branding/logo.png?t=' + Date.now();
-    notify('Station logo uploaded. Enable it and save settings if needed.');
-  } catch(e) { notify(e.message, true); }
-}
-async function deleteLogo() {
-  try { await jfetch('/api/branding/logo', {method:'DELETE'}); logoPreview.style.display='none'; notify('Station logo removed.'); }
-  catch(e) { notify(e.message, true); }
-}
-
-function previewSlide(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?t=${Date.now()}`; notify(`Previewing ${name} for 12 seconds. Live channel unchanged.`); }
-function previewTestAlert(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?test_alert=true&t=${Date.now()}`; notify('TEST alert preview for 12 seconds — live channel unchanged.'); }
-async function cleanCache() { try { const r=await jfetch('/api/cache/clean',{method:'POST'}); notify(`Cache cleanup removed ${r.removed_files} files.`); refreshStatus(); } catch(e) { notify(e.message,true); } }
-
-async function manualRefresh() { try { await jfetch('/api/refresh', {method:'POST'}); notify('Weather refresh requested.'); } catch(e) { notify(e.message, true); } }
-async function restartStream() { try { await jfetch('/api/stream/restart', {method:'POST'}); notify('Video stream restart requested.'); } catch(e) { notify(e.message, true); } }
-
-setInterval(() => { if (Date.now() >= previewHoldUntil) preview.src = '/preview.jpg?t=' + Date.now(); }, 5000);
-async function refreshStatus() {
-  try {
-    const s = await jfetch('/api/status');
-    streamState.textContent = s.stream.running ? `ALL ${s.stream.channel_count||0} CHANNELS ON AIR` : `${s.stream.running_channels||0}/${s.stream.channel_count||0} ON AIR`;
-    streamState.className = 'pill ' + (s.stream.running ? 'ok' : 'bad');
-    radarState.textContent = s.radar.frames_loaded ? `L ${s.radar.views?.local||0} • R ${s.radar.views?.regional||0} • W ${s.radar.views?.wide||0}` : 'NO RADAR';
-    radarState.className = 'pill ' + (s.radar.frames_loaded ? 'ok' : 'bad');
-    takeoverState.textContent = s.severe_weather?.takeover_active ? 'TAKEOVER ACTIVE' : 'NORMAL';
-    takeoverState.className = 'pill ' + (s.severe_weather?.takeover_active ? 'bad' : 'ok');
-    statusGrid.innerHTML = `
-      <div><span>Configured ZIPs</span><strong>${s.configured_locations}</strong></div>
-      <div><span>RWN Channels</span><strong>${s.stream.channel_count||0}</strong></div>
-      <div><span>HLS Ready</span><strong>${s.stream.ready_channels||0}/${s.stream.channel_count||0}</strong></div>
-      <div><span>Realtime</span><strong>${s.stream.realtime_channels||0}/${s.stream.channel_count||0}</strong></div>
-      <div><span>Loaded</span><strong>${s.weather.locations_loaded}</strong></div>
-      <div><span>Alerts</span><strong>${s.weather.active_alerts}</strong></div>
-      <div><span>Alert Audio</span><strong>${s.stream.alert_audio || 'unknown'}</strong></div>
-      <div><span>Local Update</span><strong>${s.presentation?.scheduled_update_active ? 'ACTIVE' : 'Normal'}</strong></div>
-      <div><span>Local Radar</span><strong>${s.radar.views?.local || 0}</strong></div>
-      <div><span>Regional Radar</span><strong>${s.radar.views?.regional || 0}</strong></div>
-      <div><span>Wide Radar</span><strong>${s.radar.views?.wide || 0}</strong></div>
-      <div><span>Map Cities</span><strong>${s.places?.cities_loaded || 0}</strong></div>
-      <div><span>Storm Guidance</span><strong>${s.storm_guidance?.available ? 'Ready' : 'Waiting'}</strong></div>
-      <div><span>SPC Day 1</span><strong>${s.spc?.day1_risk || 'Waiting'}</strong></div>
-      <div><span>Daypart</span><strong>${s.programming?.daypart || '--'}</strong></div>
-      <div><span>History Rows</span><strong>${s.history?.rows || 0}</strong></div>
-      <div><span>Cache</span><strong>${Math.round((s.cache?.size_bytes||0)/1048576)} MB</strong></div>
-      <div><span>HLS</span><strong>${s.stream.playlist_ready ? 'Ready' : 'Starting'}</strong></div>`;
-    const channels = s.stream?.channels || {};
-    channelGrid.innerHTML = Object.values(channels).map(ch => {
-      const rs = ch.realtime_state || 'WARMING UP';
-      const ratio = ch.realtime_ratio == null ? '--' : `${Math.round(ch.realtime_ratio*100)}%`;
-      const age = ch.playlist_age_seconds == null ? '--' : `${ch.playlist_age_seconds.toFixed(1)}s`;
-      const stateClass = rs === 'REALTIME' ? 'ok' : (rs === 'WARMING UP' ? '' : 'bad');
-      return `<div class="location-row"><div><strong>${ch.key}</strong><span>${(ch.mode||'').toUpperCase()} • ${ch.path||''}</span><small>${ch.producer?.content_fps||'--'} content FPS → ${ch.producer?.render_fps||'--'} pipe FPS → ${ch.producer?.output_fps||'--'} output FPS • playlist age ${age}</small></div><div class="row-actions"><span class="pill ${ch.running?'ok':'bad'}">${ch.running?'ON AIR':'STARTING'}</span><span class="pill ${ch.playlist_ready?'ok':''}">${ch.playlist_ready?'HLS READY':'WAITING'}</span><span class="pill ${stateClass}">${rs} ${ratio}</span></div></div>`;
-    }).join('') || '<div class="empty">No channels yet. Add a ZIP code above.</div>';
-    const sources = s.sources || {};
-    sourceGrid.innerHTML = Object.entries(sources).map(([name,info]) => {
-      const ok = !info?.last_error && !!info?.last_success;
-      const state = info?.last_error ? 'ERROR' : (info?.last_success ? 'HEALTHY' : 'WAITING');
-      const age = info?.last_success ? new Date(info.last_success).toLocaleTimeString() : '--';
-      return `<div><span>${name.replaceAll('_',' ')}</span><strong>${state}</strong><small>${info?.last_error ? info.last_error.slice(0,80) : 'Last success '+age}</small></div>`;
-    }).join('');
-    if (s.weather.last_error || s.radar.last_error || s.places?.last_error || s.storm_guidance?.last_error || s.spc?.last_error || s.stream.last_error) {
-      lastError.textContent = s.weather.last_error || s.radar.last_error || s.places?.last_error || s.storm_guidance?.last_error || s.spc?.last_error || s.stream.last_error;
-      lastError.className = 'error-box';
-    } else lastError.className = 'error-box hidden';
-  } catch(e) {}
-}
-loadSettings(); refreshStatus(); setInterval(refreshStatus, 5000);
+const $=id=>document.getElementById(id); const flash=$('flash'); let settings={};
+function note(msg,bad=false){flash.textContent=msg;flash.className='flash '+(bad?'bad':'ok');setTimeout(()=>flash.className='flash hidden',4000)}
+async function jf(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw new Error(d.detail||`Request failed ${r.status}`);return d}
+function mb(n){return n==null?'--':`${(n/1048576).toFixed(n>104857600?0:1)} MB`}
+async function loadSettings(){settings=await jf('/api/settings');$('perfMode').value=settings.performance?.mode||'adaptive';$('encoder').value=settings.video?.encoder||'software';$('selfHeal').checked=settings.performance?.stall_recovery_enabled!==false;$('stallSeconds').value=settings.performance?.stall_seconds||15;$('disableRetro').checked=settings.performance?.adaptive_disable_retro!==false;$('degradedFps').value=settings.performance?.adaptive_content_fps||2;$('perfPill').textContent=(settings.performance?.mode||'adaptive').toUpperCase()}
+async function refresh(){try{const [s,sys]=await Promise.all([jf('/api/status'),jf('/api/system')]);const total=s.stream?.channel_count||0,run=s.stream?.running_channels||0,idle=s.stream?.idle_channels||0,rt=s.stream?.realtime_channels||0,deg=s.stream?.degraded_channels||0;$('mChannels').textContent=`${run}/${total}`;$('mChannelsSub').textContent=`${idle} idle • ${s.stream?.ready_channels||0} HLS ready`;$('mRealtime').textContent=run?`${rt}/${run}`:'IDLE';$('mRealtimeSub').textContent=deg?`${deg} degraded/stalled`:run?'Active encoders healthy or warming':'No video encoders consuming resources';$('mLoad').textContent=(sys.load?.['1m']??'--');$('mLoadSub').textContent=`${sys.cpu_count||'--'} CPUs • ${sys.load?.load1_percent_of_cpu??'--'}% load/core capacity`;$('mMemory').textContent=sys.memory?.used_percent==null?'--':`${sys.memory.used_percent}%`;$('mMemorySub').textContent=`Config ${mb(sys.storage?.config_bytes)} • HLS ${mb(sys.storage?.live_hls_bytes)}`;const healthy=total>0&&deg===0;$('networkState').textContent=healthy?(run?'NETWORK HEALTHY':'NETWORK IDLE'):deg?'ATTENTION':'STARTING';$('networkState').className='pill '+(healthy?'ok':deg?'bad':'');
+const ch=Object.values(s.stream?.channels||{});$('channels').innerHTML=ch.map(c=>{const on=c.running,life=c.lifecycle_state||'IDLE',pill=on?(c.realtime_state==='REALTIME'?'ok':c.realtime_state==='WARMING_UP'?'':'bad'):'';return `<div class="channel-card"><div><strong>${c.key}</strong><small>${(c.mode||'').toUpperCase()} • ${(c.streaming_mode||'').replace('_',' ')}</small></div><div><span class="pill ${pill}">${on?(c.realtime_state||'WARMING UP'):life.replace('_',' ')}</span><small>${on?(c.encoder||'software')+' • '+(c.realtime_ratio==null?'warming':Math.round(c.realtime_ratio*100)+'% realtime'):`idle ${c.viewer_activity_age_seconds==null?'':Math.round(c.viewer_activity_age_seconds)+'s since activity'}`}</small></div><div class="toolbar"><button class="button ghost mini" data-start="${c.key}">Start</button><button class="button ghost mini" data-stop="${c.key}">Stop</button><button class="button ghost mini" data-restart="${c.key}">Restart</button></div></div>`}).join('')||'<div class="empty">No channels configured.</div>';
+document.querySelectorAll('[data-start]').forEach(b=>b.onclick=async()=>{try{await jf(`/api/channels/${b.dataset.start}/start`,{method:'POST'});note(`${b.dataset.start} starting.`)}catch(e){note(e.message,true)}});document.querySelectorAll('[data-stop]').forEach(b=>b.onclick=async()=>{try{await jf(`/api/channels/${b.dataset.stop}/stop`,{method:'POST'});note(`${b.dataset.stop} stopping.`)}catch(e){note(e.message,true)}});document.querySelectorAll('[data-restart]').forEach(b=>b.onclick=async()=>{try{await jf(`/api/channels/${b.dataset.restart}/restart`,{method:'POST'});note(`${b.dataset.restart} restart requested.`)}catch(e){note(e.message,true)}});
+const src=s.sources||{};$('sources').innerHTML=Object.entries(src).map(([k,v])=>{const ok=!v?.last_error&&!!v?.last_success;return `<div><span><i class="health-dot ${ok?'ok':v?.last_error?'bad':''}"></i>${k.replaceAll('_',' ')}</span><strong>${v?.last_error?'ERROR':v?.last_success?'HEALTHY':'WAITING'}</strong><small>${v?.last_error?String(v.last_error).slice(0,90):v?.last_success?'Updated '+new Date(v.last_success).toLocaleTimeString():'No successful update yet'}</small></div>`}).join('');
+$('maintenance').innerHTML=`<div><span>Cache</span><strong>${mb(s.cache?.size_bytes)}</strong></div><div><span>History DB</span><strong>${mb(s.history?.size_bytes)}</strong></div><div><span>History rows</span><strong>${s.history?.rows||0}</strong></div><div><span>Piper TTS</span><strong>${s.tts?.enabled?(s.tts?.voice_installed?'READY':'VOICE NEEDED'):'OFF'}</strong><small>${s.tts?.voice||''}${s.tts?.last_error?' • '+s.tts.last_error.slice(0,70):''}</small></div><div><span>Encoder recoveries</span><strong>${ch.reduce((a,x)=>a+(x.recovery_count||0),0)}</strong></div>`;
+$('encoders').innerHTML=Object.entries(sys.encoders||{}).map(([k,v])=>`<div><span>${k}</span><strong>${v.available?'AVAILABLE':v.compiled?'NEEDS DEVICE':'UNAVAILABLE'}</strong></div>`).join('');
+}catch(e){note(e.message,true)}}
+async function loadProfiles(){const p=await jf('/api/profiles');const all={...p.built_in,...p.custom};$('profiles').innerHTML=Object.entries(all).map(([k,v])=>`<div class="profile-card"><strong>${v.label||k}</strong><p>${v.description||'Custom profile'}</p><button class="button ghost mini" data-profile="${k}">Apply</button></div>`).join('');document.querySelectorAll('[data-profile]').forEach(b=>b.onclick=async()=>{try{await jf(`/api/profiles/${b.dataset.profile}/apply`,{method:'POST'});note(`Applied ${b.dataset.profile}. Encoders restarting.`);await loadSettings()}catch(e){note(e.message,true)}})}
+$('savePerf').onclick=async()=>{try{await jf('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({performance:{mode:$('perfMode').value,stall_recovery_enabled:$('selfHeal').checked,stall_seconds:Number($('stallSeconds').value||15),adaptive_disable_retro:$('disableRetro').checked,adaptive_content_fps:Number($('degradedFps').value||2)},video:{encoder:$('encoder').value}})});note('Performance policy saved. Encoders restarting.');await loadSettings()}catch(e){note(e.message,true)}};
+$('restartAll').onclick=async()=>{try{await jf('/api/stream/restart',{method:'POST'});note('All encoders restarting.')}catch(e){note(e.message,true)}};
+$('refreshData').onclick=async()=>{try{await jf('/api/refresh',{method:'POST'});note('Weather/radar refresh requested.')}catch(e){note(e.message,true)}};
+$('cleanCache').onclick=async()=>{try{const r=await jf('/api/cache/clean',{method:'POST'});note(`Removed ${r.removed_files||0} cached files.`);refresh()}catch(e){note(e.message,true)}};
+$('vacuumDb').onclick=async()=>{try{const r=await jf('/api/history/vacuum',{method:'POST'});note(`History DB vacuum complete: ${mb(r.before_bytes)} → ${mb(r.after_bytes)}.`);refresh()}catch(e){note(e.message,true)}};
+$('saveProfile').onclick=async()=>{const name=$('profileName').value.trim();if(!name)return note('Enter a profile name.',true);try{await jf(`/api/profiles/${encodeURIComponent(name)}/save`,{method:'POST'});note('Custom profile saved.');$('profileName').value='';loadProfiles()}catch(e){note(e.message,true)}};
+$('restoreFile').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;if(!confirm('Restore this WeatherStream backup? Current settings/branding/history in the backup will replace the active copy.'))return;try{const r=await fetch('/api/backup/restore',{method:'POST',headers:{'Content-Type':'application/zip'},body:f});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Restore failed');note('Backup restored. Encoders restarting.');await loadSettings();refresh()}catch(err){note(err.message,true)}finally{e.target.value=''}};
+loadSettings();loadProfiles();refresh();setInterval(refresh,5000);
 </script>
-</body>
-</html>
+</body></html>

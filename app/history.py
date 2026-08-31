@@ -118,6 +118,30 @@ class HistoryStore:
             conn.commit()
             return int(cur.rowcount or 0)
 
+    def vacuum(self) -> dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            before = self.path.stat().st_size if self.path.exists() else 0
+            conn.execute("VACUUM")
+        after = self.path.stat().st_size if self.path.exists() else 0
+        return {"ok": True, "before_bytes": before, "after_bytes": after}
+
+    def replace_database(self, data: bytes) -> None:
+        if not data:
+            return
+        with self._lock:
+            tmp = self.path.with_suffix(".restore.tmp")
+            tmp.write_bytes(data)
+            # Validate that the uploaded DB is readable and has the expected table.
+            conn = sqlite3.connect(tmp)
+            try:
+                row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='observations'").fetchone()
+                if not row:
+                    raise ValueError("Backup database does not contain observations table")
+            finally:
+                conn.close()
+            tmp.replace(self.path)
+            self._init_db()
+
     def status(self, primary_location_id: str | None = None) -> dict[str, Any]:
         try:
             size = self.path.stat().st_size if self.path.exists() else 0
