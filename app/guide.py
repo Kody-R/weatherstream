@@ -81,7 +81,7 @@ def channel_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
 
 def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] | None = None, hours: int = 24) -> str:
     severe_by_location=severe_by_location or {}; specs=channel_specs(settings)
-    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.2.5">']
+    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.2.5.1">']
     for spec in specs:
         lines += [f'  <channel id="{escape(spec["id"])}">',f'    <display-name>{escape(spec["name"])}</display-name>','  </channel>']
     for spec in specs:

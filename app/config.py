@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -12,7 +13,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 15,
+    "version": 16,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -101,7 +102,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.2.5 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.2.5.1 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -159,6 +160,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "hls_list_size": 10,
         "preview_interval_seconds": 5,
         "encoder": "software",
+        "encoder_device": "auto",
     },
     "performance": {
         "mode": "adaptive",
@@ -410,7 +412,14 @@ class ConfigStore:
             if previous_version < 15:
                 merged["notifications"] = _deep_merge(DEFAULT_SETTINGS["notifications"], raw.get("notifications") or {})
 
-            merged["version"] = 15
+            if previous_version < 16:
+                # v0.2.5.1 adds explicit DRM render-node selection. Existing
+                # installations default to Auto so no hard-coded renderD128 is retained.
+                old_video = raw.get("video") if isinstance(raw.get("video"), dict) else {}
+                if "encoder_device" not in old_video:
+                    merged["video"]["encoder_device"] = "auto"
+
+            merged["version"] = 16
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -449,7 +458,7 @@ class ConfigStore:
             raise ValueError("settings payload must be an object")
         with self._lock:
             self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
-            self._settings["version"] = 15
+            self._settings["version"] = 16
             self._save_locked()
         return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
 
@@ -471,7 +480,7 @@ class ConfigStore:
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 15
+            self._settings["version"] = 16
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -513,6 +522,10 @@ class ConfigStore:
             video["bitrate"] = bitrate
             if video.get("encoder") not in {"auto", "software", "nvenc", "qsv", "vaapi"}:
                 video["encoder"] = "software"
+            encoder_device = str(video.get("encoder_device") or "auto").strip()
+            if encoder_device != "auto" and not re.fullmatch(r"/dev/dri/renderD\d+", encoder_device):
+                encoder_device = "auto"
+            video["encoder_device"] = encoder_device
             self._settings["video"] = video
 
             radar = self._settings["radar"]
@@ -636,6 +649,8 @@ class ConfigStore:
                 if "music_volume" in item: row["music_volume"] = _clamp_float(item.get("music_volume"), 0, 1, 0.30)
                 if item.get("transition") in {"cut", "crossfade", "wipe", "wipe_vertical", "slide_left", "slide_up", "venetian", "dissolve", "pixel_dissolve", "crt_fade"}: row["transition"] = item.get("transition")
                 if item.get("encoder") in {"auto", "software", "nvenc", "qsv", "vaapi"}: row["encoder"] = item.get("encoder")
+                device = str(item.get("encoder_device") or "").strip()
+                if device == "auto" or re.fullmatch(r"/dev/dri/renderD\d+", device): row["encoder_device"] = device
                 if item.get("streaming_mode") in {"always_on", "on_demand"}: row["streaming_mode"] = item.get("streaming_mode")
                 if "output_fps" in item: row["output_fps"] = _clamp_int(item.get("output_fps"), 5, 30, 15)
                 if "content_fps" in item: row["content_fps"] = _clamp_int(item.get("content_fps"), 1, 10, 3)

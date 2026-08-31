@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WEATHERSTREAM_PREVIEW=/tmp/weatherstream/preview.jpg
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl intel-media-va-driver vainfo \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/weatherstream

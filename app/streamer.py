@@ -14,47 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from app.observability import observability
+from app.hardware import encoder_capabilities, choose_encoder, normalize_device_setting, device_info
 
 LIVE_DIR = Path(os.environ.get("WEATHERSTREAM_LIVE", "/tmp/weatherstream/live"))
 MUSIC_DIR = Path(os.environ.get("WEATHERSTREAM_MUSIC", "/music"))
 PREVIEW_PATH = Path(os.environ.get("WEATHERSTREAM_PREVIEW", "/tmp/weatherstream/preview.jpg"))
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus"}
-
-_ENCODER_CAPS: dict[str, Any] | None = None
-
-def encoder_capabilities(force: bool = False) -> dict[str, Any]:
-    global _ENCODER_CAPS
-    if _ENCODER_CAPS is not None and not force:
-        return dict(_ENCODER_CAPS)
-    text = ""
-    try:
-        text = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=8).stdout
-    except Exception:
-        pass
-    dri = Path("/dev/dri/renderD128").exists()
-    nvdev = Path("/dev/nvidia0").exists()
-    _ENCODER_CAPS = {
-        "software": {"available": True, "encoder": "libx264"},
-        "nvenc": {"available": "h264_nvenc" in text and nvdev, "compiled": "h264_nvenc" in text, "device": nvdev, "encoder": "h264_nvenc"},
-        "qsv": {"available": "h264_qsv" in text and dri, "compiled": "h264_qsv" in text, "device": dri, "encoder": "h264_qsv"},
-        "vaapi": {"available": "h264_vaapi" in text and dri, "compiled": "h264_vaapi" in text, "device": dri, "encoder": "h264_vaapi"},
-    }
-    return dict(_ENCODER_CAPS)
-
-def _choose_encoder(requested: str, hardware_failed: bool = False) -> str:
-    if hardware_failed:
-        return "software"
-    requested = requested if requested in {"auto", "software", "nvenc", "qsv", "vaapi"} else "software"
-    caps = encoder_capabilities()
-    if requested == "auto":
-        for name in ("qsv", "vaapi", "nvenc"):
-            if (caps.get(name) or {}).get("available"):
-                return name
-        return "software"
-    if requested != "software" and not (caps.get(requested) or {}).get("available"):
-        return "software"
-    return requested
-
 
 def location_channel_key(location: dict[str, Any]) -> str:
     postal = "".join(ch for ch in str(location.get("postal_code") or "local") if ch.isdigit())[:5]
@@ -102,8 +67,12 @@ class ChannelWorker:
         self._recovery_count = 0
         self._last_restart_reason: str | None = None
         self._last_recovery_at: float | None = None
-        self._hardware_failed = False
+        self._hardware_failed_signature: tuple[str, str] | None = None
+        self._hardware_fallback_count = 0
+        self._hardware_fallback_active = False
         self._active_encoder = "software"
+        self._active_encoder_device: str | None = None
+        self._encoder_fallback_reason: str | None = None
         self.last_viewer_activity: float | None = None
         self.last_idle_at: float | None = None
         self.activation_count = 0
@@ -182,6 +151,11 @@ class ChannelWorker:
         return bool(self._thread and self._thread.is_alive() and not self._stop.is_set())
 
     def request_restart(self, reason: str = "manual", recovery: bool = False) -> None:
+        # Manual/settings restarts explicitly retry the configured hardware. Automatic
+        # stall recovery does not repeatedly hammer a device that already failed.
+        if not recovery:
+            self._hardware_failed_signature = None
+            self._hardware_fallback_active = False
         self._last_restart_reason = reason
         self._restart_count += 1
         if recovery:
@@ -215,7 +189,7 @@ class ChannelWorker:
         if override.get("transition"):
             settings.setdefault("presentation", {})["transition"] = override["transition"]
         video = settings.setdefault("video", {})
-        for key in ("encoder", "output_fps", "content_fps", "bitrate"):
+        for key in ("encoder", "encoder_device", "output_fps", "content_fps", "bitrate"):
             if key in override:
                 video[key] = override[key]
         return settings
@@ -523,7 +497,13 @@ class ChannelWorker:
             "last_tts_local_block_id": self.last_tts_local_block_id,
             "local_on_8s": self._local8_status(),
             "encoder": self._active_encoder,
+            "encoder_device": self._active_encoder_device,
+            "encoder_device_info": device_info(self._active_encoder, self._active_encoder_device),
             "requested_encoder": str(video.get("encoder", "software")),
+            "requested_encoder_device": normalize_device_setting(video.get("encoder_device", "auto")),
+            "encoder_fallback_reason": self._encoder_fallback_reason,
+            "hardware_fallback_count": self._hardware_fallback_count,
+            "hardware_fallback_active": self._hardware_fallback_active,
             "adaptive_state": "DEGRADED" if self._adaptive_degraded else "NORMAL",
             "restart_count": self._restart_count,
             "recovery_count": self._recovery_count,
@@ -547,7 +527,8 @@ class ChannelWorker:
         }
 
     def diagnostics_text(self) -> str:
-        lines = [f"[{self.key}] encoder={self._active_encoder} state={'DEGRADED' if self._adaptive_degraded else 'NORMAL'}"]
+        device = f" device={self._active_encoder_device}" if self._active_encoder_device else ""
+        lines = [f"[{self.key}] encoder={self._active_encoder}{device} state={'DEGRADED' if self._adaptive_degraded else 'NORMAL'}"]
         if self.last_error: lines.append(f"last_error: {self.last_error}")
         lines.extend(self._stderr_lines)
         return "\n".join(lines)
@@ -576,6 +557,8 @@ class ChannelWorker:
         playlist = self.output_dir / "index.m3u8"
         try:
             self._playlist_mtime = playlist.stat().st_mtime
+            if self._active_encoder == "software" and self._hardware_fallback_active:
+                self._hardware_fallback_active = False
         except OSError:
             return
         now = time.monotonic()
@@ -641,10 +624,20 @@ class ChannelWorker:
         render_fps = int(video.get("render_fps", 5)); output_fps = int(video.get("output_fps", 15))
         seg = int(video.get("hls_segment_seconds", 3)); list_size = int(video.get("hls_list_size", 10))
         bitrate = str(video.get("bitrate", "2000k")); preset = str(video.get("encoder_preset", "superfast")); music_playlist = self._music_playlist(settings)
-        requested_encoder = str(video.get("encoder", "software")); self._active_encoder = _choose_encoder(requested_encoder, self._hardware_failed)
+        requested_encoder = str(video.get("encoder", "software"))
+        requested_device = normalize_device_setting(video.get("encoder_device", "auto"))
+        self._active_encoder, self._active_encoder_device, self._encoder_fallback_reason = choose_encoder(
+            requested_encoder, requested_device, self._hardware_failed_signature
+        )
         cmd = ["ffmpeg","-hide_banner","-loglevel","warning","-y"]
-        if self._active_encoder == "vaapi": cmd += ["-vaapi_device", "/dev/dri/renderD128"]
-        elif self._active_encoder == "qsv": cmd += ["-init_hw_device", "qsv=hw:/dev/dri/renderD128", "-filter_hw_device", "hw"]
+        if self._active_encoder == "vaapi" and self._active_encoder_device:
+            cmd += ["-init_hw_device", f"vaapi=hw:{self._active_encoder_device}", "-filter_hw_device", "hw"]
+        elif self._active_encoder == "qsv" and self._active_encoder_device:
+            cmd += [
+                "-init_hw_device",
+                f"qsv=hw,child_device={self._active_encoder_device},child_device_type=vaapi",
+                "-filter_hw_device", "hw",
+            ]
         cmd += ["-f","rawvideo","-pix_fmt","rgb24","-s",f"{w}x{h}","-r",str(render_fps),"-i","pipe:0"]
         if music_playlist:
             cmd += ["-stream_loop","-1","-f","concat","-safe","0","-i",str(music_playlist)]
@@ -825,9 +818,28 @@ class ChannelWorker:
             except Exception:
                 pass
 
+    def _mark_hardware_failed(self, requested_encoder: str, requested_device: str, detail: str) -> None:
+        if self._active_encoder == "software":
+            return
+        self._hardware_failed_signature = (requested_encoder, normalize_device_setting(requested_device))
+        self._hardware_fallback_count += 1
+        self._hardware_fallback_active = True
+        reason = detail.strip() or f"{self._active_encoder} initialization failed"
+        self.last_error = f"{reason} | hardware encoder failed; immediately falling back to libx264"
+        observability.event(
+            "stream", "Hardware encoder failed; immediate software fallback",
+            channel=self.key, encoder=self._active_encoder, device=self._active_encoder_device,
+            requested_encoder=requested_encoder, requested_device=normalize_device_setting(requested_device),
+        )
+
     def _run(self) -> None:
         while not self._stop.is_set():
-            settings=self._effective_settings(self.config_store.get()); self._clean_live(); read_fd,write_fd=os.pipe(); cmd=self._ffmpeg_command(settings,read_fd); self._restart.clear(); audio_thread=None
+            immediate_retry = False
+            settings=self._effective_settings(self.config_store.get())
+            video_settings = settings.get("video") or {}
+            requested_encoder = str(video_settings.get("encoder", "software"))
+            requested_device = normalize_device_setting(video_settings.get("encoder_device", "auto"))
+            self._clean_live(); read_fd,write_fd=os.pipe(); cmd=self._ffmpeg_command(settings,read_fd); self._restart.clear(); audio_thread=None
             try:
                 self._stderr_lines.clear()
                 self._process=subprocess.Popen(cmd,stdin=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(read_fd,)); os.close(read_fd); read_fd=-1
@@ -871,14 +883,20 @@ class ChannelWorker:
                 if self._process.poll() is not None and not self._stop.is_set() and not self._restart.is_set():
                     tail="\n".join(self._stderr_lines)[-3000:]
                     self.last_error=tail.strip() or f"FFmpeg exited with code {self._process.returncode}"
-                    if self._active_encoder != "software" and self.started_at and time.time() - self.started_at < 20:
-                        self._hardware_failed = True
-                        self.last_error = f"{self.last_error} | hardware encoder failed; falling back to libx264"
+                    if self._active_encoder != "software":
+                        self._mark_hardware_failed(requested_encoder, requested_device, self.last_error)
+                        immediate_retry = True
             except BrokenPipeError:
                 tail="\n".join(self._stderr_lines)[-3000:]
                 self.last_error=tail.strip() or "FFmpeg pipe closed."
+                if self._active_encoder != "software":
+                    self._mark_hardware_failed(requested_encoder, requested_device, self.last_error)
+                    immediate_retry = True
             except Exception as exc:
                 self.last_error=str(exc)
+                if self._active_encoder != "software":
+                    self._mark_hardware_failed(requested_encoder, requested_device, self.last_error)
+                    immediate_retry = True
             finally:
                 if read_fd>=0:
                     try: os.close(read_fd)
@@ -887,7 +905,12 @@ class ChannelWorker:
                     try: os.close(write_fd)
                     except OSError: pass
                 self._terminate_process(); self._process=None
-            if not self._stop.is_set(): time.sleep(2)
+            if not self._stop.is_set():
+                if immediate_retry:
+                    # Do not burn the on-demand startup window waiting on the supervisor.
+                    # The same worker immediately rebuilds FFmpeg with libx264.
+                    continue
+                time.sleep(2)
 
 
 class Streamer:

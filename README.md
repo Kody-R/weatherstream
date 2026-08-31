@@ -1,8 +1,41 @@
-# WeatherStream v0.2.5 — Guided Setup & Operator QoL
+# WeatherStream v0.2.5.1 — Intel Hardware Encoding Reliability Patch
 
-WeatherStream generates Roller Weather Network (RWN) local-weather IPTV channels for Jellyfin, VLC, and other HLS clients. **v0.2.5 makes a fresh installation easier to configure, makes the large settings surface searchable, adds a non-disruptive full-rundown preview, and introduces bounded webhook notifications for structured operational events.** The v0.2.4 revision-aware rendering and pooled-refresh performance foundation is retained.
+WeatherStream generates Roller Weather Network (RWN) local-weather IPTV channels for Jellyfin, VLC, and other HLS clients. **v0.2.5.1 fixes the Linux Intel QSV/VAAPI path, removes the hard-coded `/dev/dri/renderD128` assumption, adds per-device probe/selection, and makes hardware failure fall back to `libx264` immediately without abandoning an on-demand tune request.**
 
-## What's new in v0.2.5
+## What's new in v0.2.5.1
+
+- Docker image now installs `intel-media-va-driver` and `vainfo`
+- Enumerates every mapped `/dev/dri/renderD*` node
+- Stores an `encoder_device` setting globally and as a per-channel override
+- Broadcast Dashboard and Channel Lineup expose GPU/render-node selection
+- QSV uses Linux `child_device=/dev/dri/renderD*` initialization with `child_device_type=vaapi`
+- VAAPI uses the explicitly selected DRM render node
+- QSV and VAAPI are marked READY only after a real one-frame H.264 hardware encode succeeds
+- `vainfo` results, PCI slot, driver, vendor/device IDs, and per-node probe state are exposed through encoder telemetry
+- Failed QSV/VAAPI startup immediately retries the same channel with `libx264`
+- The original HLS playlist request remains alive through hardware→software fallback
+- Channel telemetry reports the requested encoder/device, actual encoder/device, fallback reason, and fallback count
+- No code path hard-codes `renderD128` as the encoder device
+- Settings schema 16 migration defaults existing installations to `encoder_device: auto`
+
+### Docker / CasaOS GPU mapping
+
+The container can only probe devices that are mapped into it. For Compose, enable:
+
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+```
+
+Then open **Admin → Broadcast Dashboard → Performance Manager**, click **Re-probe GPUs**, choose QSV or VAAPI, and select either **Auto — first READY device** or a specific `/dev/dri/renderD*` node. The per-channel Channel Lineup page can override the global device.
+
+`READY` now means the test encode succeeded; seeing `h264_qsv` or `h264_vaapi` in `ffmpeg -encoders` by itself is no longer considered sufficient.
+
+## v0.2.5 — Guided Setup & Operator QoL
+
+WeatherStream v0.2.5 made fresh installation easier to configure, made the settings surface searchable, added a non-disruptive full-rundown preview, and introduced bounded webhook notifications for structured operational events. The v0.2.4 revision-aware rendering and pooled-refresh performance foundation is retained.
+
+### What's new in v0.2.5
 
 - First-run setup wizard for the initial ZIP, station identity, theme, and streaming mode
 - Automatic redirect to setup until the first location exists
@@ -28,7 +61,7 @@ Events use this envelope:
 ```json
 {
   "product": "WeatherStream",
-  "version": "0.2.5",
+  "version": "0.2.5.1",
   "event": {
     "time": 1788144000.0,
     "kind": "source",
@@ -582,10 +615,10 @@ The response is `audio/wav`.
 
 ## Upgrade / settings schema
 
-v0.2.5 advances the settings schema while retaining all earlier migrations:
+v0.2.5.1 advances the settings schema while retaining all earlier migrations:
 
 ```text
-13 → 14 → 15
+13 → 14 → 15 → 16
 ```
 
 Migration behavior:
@@ -596,6 +629,7 @@ Migration behavior:
 - Existing TTS settings and downloaded voices under `/config` are preserved.
 - TTS remains optional.
 - Webhook notifications are added disabled, with no destination configured.
+- Existing encoder choices are preserved; the new GPU device selector defaults to `auto`.
 - An untouched v0.2.2 Local on the 8s sequence is migrated to the new phase list:
 
 ```text
@@ -648,7 +682,7 @@ The release was checked for:
 - Python compilation across the application
 - Admin Settings JavaScript syntax
 - Broadcast Dashboard JavaScript syntax
-- Settings schema `13 → 14 → 15` migrations
+- Settings schema `13 → 14 → 15 → 16` migrations
 - Dedicated Local on the 8s phase progression
 - No immediate replay of a completed clock block
 - Severe Weather Takeover preemption

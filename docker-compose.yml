@@ -2,7 +2,7 @@ services:
   weatherstream:
     build: .
     # After publishing to GHCR, replace "build: ." with, for example:
-    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.2.5
+    # image: ghcr.io/YOUR_GITHUB_USERNAME/weatherstream:v0.2.5.1
     container_name: weatherstream
     init: true
     restart: unless-stopped

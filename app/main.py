@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     global _service_ready
     notification_manager.start(); weather_manager.start(); place_manager.start(); radar_manager.start(); spc_manager.start(); cache_manager.start(); streamer.start()
     _service_ready = True
-    observability.event("lifecycle", "WeatherStream service started", version="0.2.5")
+    observability.event("lifecycle", "WeatherStream service started", version="0.2.5.1")
     try:
         yield
     finally:
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
         observability.event("lifecycle", "WeatherStream service stopping")
         notification_manager.stop(); streamer.stop(); tts_manager.stop(); cache_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
 
-app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.2.5",lifespan=lifespan)
+app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.2.5.1",lifespan=lifespan)
 templates=Jinja2Templates(directory=str(BASE/"templates")); app.mount("/static",StaticFiles(directory=str(BASE/"static")),name="static")
 LIVE_DIR.mkdir(parents=True,exist_ok=True)
 
@@ -154,7 +154,7 @@ def api_settings(): return config_store.get()
 @app.get("/api/setup/status")
 def api_setup_status():
     settings=config_store.get(); locations=settings.get("locations") or []
-    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.2.5"}
+    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.2.5.1"}
 
 @app.post("/api/setup/complete")
 def api_setup_complete(payload:SetupRequest):
@@ -263,7 +263,7 @@ def api_status():
     sources["radar"]={"last_success":_source_stamp(rstat.get("last_update")),"last_error":rstat.get("last_error")}; sources["geonames"]={"last_success":_source_stamp(pstat.get("last_update")),"last_error":pstat.get("last_error")}
     all_alerts=sum(len(v or []) for v in (snapshot.get("alerts_by_location") or {}).values())
     result = {
-        "version":"0.2.5","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign")},"security":{"admin_authentication":authentication_enabled()},
+        "version":"0.2.5.1","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign")},"security":{"admin_authentication":authentication_enabled()},
         "weather":{"last_weather_update":snapshot.get("last_weather_update"),"last_alert_update":snapshot.get("last_alert_update"),"last_error":snapshot.get("last_error"),"locations_loaded":len(snapshot.get("locations",{})),"active_alerts":all_alerts,"location_status":snapshot.get("location_status") or {},"performance":weather_manager.performance_status()},
         "severe_weather":{"takeover_active":renderer.takeover_alert_for(pid) is not None,"top_event":((snapshot.get("alerts_by_location") or {}).get(pid) or [{}])[0].get("event") if ((snapshot.get("alerts_by_location") or {}).get(pid) or []) else None},
         "programming":renderer.programming_status(*renderer._channel_context(pid,"local")),
@@ -343,7 +343,14 @@ async def live_playlist(key: str, request: Request):
     if worker is None:
         raise HTTPException(status_code=404, detail="Channel not found or disabled.")
     playlist_path = LIVE_DIR / key / "index.m3u8"
-    deadline = time.monotonic() + streamer.startup_timeout()
+    startup_timeout = streamer.startup_timeout()
+    deadline = time.monotonic() + startup_timeout
+    initial_status = streamer.channel_status(key) or {}
+    fallback_seen = int(initial_status.get("hardware_fallback_count") or 0)
+    if str(initial_status.get("requested_encoder") or "software") != "software":
+        # A cold on-demand hardware tune may need to probe mapped render nodes
+        # before FFmpeg starts. Keep that work inside the same client request.
+        deadline += min(15, startup_timeout)
     while time.monotonic() < deadline:
         try:
             if playlist_path.exists():
@@ -351,6 +358,12 @@ async def live_playlist(key: str, request: Request):
         except OSError:
             pass
         status = streamer.channel_status(key) or {}
+        fallback_count = int(status.get("hardware_fallback_count") or 0)
+        if fallback_count > fallback_seen:
+            # Keep the original tune request alive while the same worker switches
+            # from failed QSV/VAAPI to libx264 and produces its first segment.
+            fallback_seen = fallback_count
+            deadline = max(deadline, time.monotonic() + startup_timeout)
         if status.get("last_error") and not status.get("running") and not status.get("lifecycle_state") == "STARTING":
             break
         await asyncio.sleep(0.15)
@@ -498,7 +511,7 @@ def api_profile_save(profile_name:str):
 @app.get("/api/backup")
 def api_backup():
     data=create_backup_bytes(config_store.get())
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.5-backup.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.5.1-backup.zip"'})
 
 @app.post("/api/backup/restore")
 async def api_backup_restore(request:Request):
@@ -515,18 +528,18 @@ def api_history_vacuum(): return history_store.vacuum()
 def api_diagnostics():
     settings=config_store.get(); status=api_status(); channels={"channels":_channel_payload(None)}
     data=create_diagnostics_bytes(settings,status,channels,streamer)
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.5-diagnostics.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.5.1-diagnostics.zip"'})
 
 @app.get("/health")
-def health(): return {"status":"ok","ready":_service_ready,"version":"0.2.5"}
+def health(): return {"status":"ok","ready":_service_ready,"version":"0.2.5.1"}
 
 @app.get("/health/live")
-def health_live(): return {"status":"ok","version":"0.2.5"}
+def health_live(): return {"status":"ok","version":"0.2.5.1"}
 
 @app.get("/health/ready")
 def health_ready():
-    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.2.5"},status_code=503)
-    return {"status":"ok","ready":True,"version":"0.2.5"}
+    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.2.5.1"},status_code=503)
+    return {"status":"ok","ready":True,"version":"0.2.5.1"}
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics(): return PlainTextResponse(observability.prometheus(), media_type="text/plain; version=0.0.4")

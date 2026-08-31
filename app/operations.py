@@ -147,7 +147,7 @@ def system_status() -> dict[str, Any]:
 def create_backup_bytes(settings: dict[str, Any]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", json.dumps({"product":"WeatherStream","version":"0.2.5","created_at":time.time()}, indent=2))
+        zf.writestr("manifest.json", json.dumps({"product":"WeatherStream","version":"0.2.5.1","created_at":time.time()}, indent=2))
         zf.writestr("settings.json", json.dumps(settings, indent=2))
         if DB_PATH.exists(): zf.write(DB_PATH, "weatherstream.db")
         if BRANDING_DIR.exists():
@@ -196,7 +196,7 @@ def create_diagnostics_bytes(settings: dict[str, Any], app_status: dict[str, Any
         sanitized["notifications"]["webhook_url"] = "<redacted>"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("README.txt", "WeatherStream v0.2.5 diagnostic bundle. No music files are included.\n")
+        zf.writestr("README.txt", "WeatherStream v0.2.5.1 diagnostic bundle. No music files are included.\n")
         zf.writestr("status.json", json.dumps(app_status, indent=2, default=str))
         zf.writestr("channels.json", json.dumps(channels, indent=2, default=str))
         zf.writestr("settings-sanitized.json", json.dumps(sanitized, indent=2))

@@ -27,17 +27,27 @@ class RevisionedSettingsTests(unittest.TestCase):
                 self.assertGreater(new_revision, revision)
                 self.assertEqual(changed["station_name"], "Revision Test")
 
-    def test_v14_migrates_notification_defaults_to_schema_15(self) -> None:
+    def test_v14_migrates_notification_defaults_through_schema_16(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             settings_path = root / "settings.json"
             settings_path.write_text(json.dumps({"version": 14, "station_name": "Existing Station"}), encoding="utf-8")
             with patch("app.config.CONFIG_DIR", root), patch("app.config.SETTINGS_PATH", settings_path):
                 settings = ConfigStore().get()
-            self.assertEqual(settings["version"], 15)
+            self.assertEqual(settings["version"], 16)
             self.assertEqual(settings["station_name"], "Existing Station")
             self.assertFalse(settings["notifications"]["enabled"])
             self.assertEqual(settings["notifications"]["events"], ["severe", "source", "stream"])
+
+    def test_v15_adds_auto_encoder_device_for_schema_16(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            settings_path = root / "settings.json"
+            settings_path.write_text(json.dumps({"version": 15, "video": {"encoder": "qsv"}}), encoding="utf-8")
+            with patch("app.config.CONFIG_DIR", root), patch("app.config.SETTINGS_PATH", settings_path):
+                settings = ConfigStore().get()
+            self.assertEqual(settings["version"], 16)
+            self.assertEqual(settings["video"]["encoder_device"], "auto")
 
 
 class BatchedHistoryTests(unittest.TestCase):

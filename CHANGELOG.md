@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.5.1
+
+### Added
+
+- Intel media VAAPI userspace driver and `vainfo` in the Docker image
+- Enumeration and metadata for every mapped `/dev/dri/renderD*` node
+- Global and per-channel GPU/render-node selection
+- Real one-frame QSV/VAAPI encode probes before a device is marked READY
+- Hardware probe details and actual encoder/device channel telemetry
+- Settings schema 16 migration for `encoder_device`
+- Unit tests for render-node selection and generated QSV/VAAPI FFmpeg commands
+
+### Changed
+
+- Linux QSV initialization now uses the selected DRM render node as `child_device` with VAAPI as the child device type
+- VAAPI explicitly initializes the selected DRM render node
+- Auto encoder selection considers only devices that passed an actual encode probe
+- On-demand HLS requests remain pending while an early hardware failure falls back to software
+
+### Fixed
+
+- Removed the hard-coded `/dev/dri/renderD128` assumption
+- Hardware initialization failures now immediately retry with `libx264` instead of waiting for the normal supervisor delay
+- Manual/settings restarts retry the configured hardware after a previous fallback
+
 ## 0.2.5
 
 ### Added
