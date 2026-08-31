@@ -294,7 +294,7 @@ def api_status():
     tropical_status=tropical_manager.status(primary_location,primary_alerts)
     sources["nhc_tropical"]={"last_success":tropical_status.get("last_update") if not tropical_status.get("last_error") else None,"last_error":tropical_status.get("last_error")}
     imagery_status=imagery_manager.status()
-    for product,row in (imagery_status.get("products") or {}).items(): sources[product]={"last_success":_source_stamp(row.get("last_update")),"last_error":row.get("last_error")}
+    for product, row in (imagery_status.get("products") or {}).items(): sources[product] = {"last_success": _source_stamp(row.get("last_update")),"last_error": row.get("last_error"),"state": row.get("state"),"enabled": row.get("enabled", True),"available": row.get("available", False),}
     result = {
         "version":"0.3.0","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign"),"regions":normalized_regions(settings)},"security":{"admin_authentication":authentication_enabled()},
         "weather":{"last_weather_update":snapshot.get("last_weather_update"),"last_alert_update":snapshot.get("last_alert_update"),"last_error":snapshot.get("last_error"),"locations_loaded":len(snapshot.get("locations",{})),"active_alerts":all_alerts,"location_status":snapshot.get("location_status") or {},"performance":weather_manager.performance_status()},
