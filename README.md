@@ -1,6 +1,24 @@
-# WeatherStream v0.2.6 — RWN Tropics Watch
+# WeatherStream v0.3.0 — RWN Network Studio
 
-WeatherStream generates Roller Weather Network (RWN) local-weather IPTV channels for Jellyfin, VLC, and other HLS clients. **v0.2.6 adds hurricane-season Tropical Weather Updates and a dedicated RWN Tropics Watch channel driven by official National Hurricane Center data, Gulf forecast-track detection, local proximity, and NWS tropical alerts.** The v0.2.5 setup/QoL work and v0.2.4 performance foundation are retained.
+WeatherStream is a self-hosted Docker broadcast engine that turns official weather data, radar, forecasts, alerts, satellite imagery, station branding, and background audio into continuously discoverable HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.0 expands one Roller Weather Network installation into a multi-region weather network with automatic event channels, Map Engine 2.0, WeatherStream Studio, per-source refresh controls, and reusable channel branding profiles.**
+
+## What's new in v0.3.0
+
+- **Automatic Weather Event Channels:** standing Tornado, Flood, Winter Weather, Wildfire, and Extreme Heat channels are published per region. Matching official NWS alerts wake only the relevant on-demand encoder; configurable cooldowns prevent start/stop thrashing.
+- **Broadcast Map Engine 2.0:** combines region-centered RainViewer radar, OSM/Census geography, NWS warning polygons, automatic city labels, tropical tracks, and cached official NOAA GOES-19 GeoColor and GLM lightning products. Each layer can be enabled independently.
+- **WeatherStream Studio:** build and drag-reorder broadcast rundowns, preview slides, create code-native station bumpers, and publish channel/daypart/region schedules without restarting the container.
+- **Multi-Region Network Mode:** assign locations to up to 12 service regions, each with its own primary location, callsign, identity, theme, branding profile, radar loop, and complete local/specialty/event lineup.
+- **Per-source refresh controls:** refresh weather/alerts, radar, GeoNames, SPC, NHC tropical, satellite, or lightning independently from the Broadcast Dashboard.
+- **Channel Branding Profiles:** reusable station name, callsign, slogan, theme, accent color, logo, and music-subfolder identity, selectable at region or individual-channel level.
+- Settings schema 18 migration preserves a v0.2.6 installation as a compatible default region and inserts the new radar-map products into the Radar rundown.
+- 34 automated regression tests cover earlier features plus schema migration, multi-region lineup generation, event matching, and Studio schedules.
+
+Official imagery references:
+
+- [NOAA/NESDIS GOES-19 GeoColor](https://www.star.nesdis.noaa.gov/GOES/fulldisk_band.php?band=GEOCOLOR&dim=1&length=36&sat=G19)
+- [NOAA/NESDIS GOES-19 GLM lightning imagery](https://www.star.nesdis.noaa.gov/GOES/conus_band.php?band=EXTENT3&dim=1&length=72&refresh=true&sat=G19)
+
+## Previous release: v0.2.6
 
 ## What's new in v0.2.6
 
@@ -76,7 +94,7 @@ Events use this envelope:
 ```json
 {
   "product": "WeatherStream",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "event": {
     "time": 1788144000.0,
     "kind": "source",
@@ -630,7 +648,7 @@ The response is `audio/wav`.
 
 ## Upgrade / settings schema
 
-v0.2.6 advances the settings schema while retaining all earlier migrations:
+v0.3.0 advances the settings schema to 18 while retaining all earlier migrations:
 
 ```text
 13 → 14 → 15 → 16 → 17

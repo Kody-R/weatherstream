@@ -13,7 +13,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 17,
+    "version": 18,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -28,6 +28,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "logo_position": "station_id_only",
         "logo_max_width": 260,
     },
+    "branding_profiles": {
+        "default": {"name": "Network Default", "station_name": "", "callsign": "", "slogan": "", "theme": "", "accent_color": "", "music_folder": ""},
+    },
+    "regions": {"enabled": False, "items": []},
     "channels": {
         "per_zip_enabled": True,
         "radar_enabled": True,
@@ -39,8 +43,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "spc_outlook", "seven_day", "weather_history", "almanac"
         ],
         "radar_sequence": [
-            "station_id", "radar_local", "radar_regional", "regional_map",
-            "radar_wide", "storm_outlook", "spc_outlook"
+            "station_id", "radar_local", "map_engine", "radar_regional", "regional_map",
+            "map_satellite", "map_lightning", "radar_wide", "storm_outlook", "spc_outlook"
         ],
         "severe_idle_sequence": [
             "station_id", "current", "spc_outlook", "storm_outlook",
@@ -57,6 +61,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "lineup": [],
         "overrides": {},
     },
+    "event_channels": {
+        "enabled": True,
+        "auto_start": True,
+        "cooldown_seconds": 7200,
+        "types": {"tornado": True, "flood": True, "winter": True, "wildfire": True, "heat": True},
+        "sequences": {
+            "tornado": ["event_summary", "alert", "alert_radar", "current", "radar_local", "nws_forecast"],
+            "flood": ["event_summary", "alert", "current", "nws_forecast", "radar_regional"],
+            "winter": ["event_summary", "alert", "current", "nws_forecast", "temperature_trend", "radar_regional"],
+            "wildfire": ["event_summary", "alert", "current", "nws_forecast", "regional_map"],
+            "heat": ["event_summary", "alert", "current", "temperature_trend", "hourly", "nws_forecast"],
+        },
+    },
     "maps": {
         "auto_city_labels": True,
         "city_min_population": 5000,
@@ -64,6 +81,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "city_radius_miles": 180,
         "regional_map_enabled": True,
         "regional_map_view": "regional",
+        "engine2": {
+            "enabled": True, "refresh_seconds": 300,
+            "layers": {"radar": True, "satellite": True, "lightning": True, "alerts": True, "tropical_tracks": True, "city_labels": True, "boundaries": True},
+        },
+    },
+    "studio": {
+        "enabled": True, "published_at": None,
+        "sequences": {}, "schedules": [],
+        "bumpers": [{"id": "network-update", "title": "ROLLER WEATHER NETWORK", "subtitle": "LOCAL WEATHER UPDATE", "duration": 6, "accent": "#ffd447"}],
     },
     "storm_guidance": {
         "enabled": True,
@@ -113,7 +139,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.2.6 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.3.0 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -187,7 +213,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "notifications": {
         "enabled": False,
         "webhook_url": "",
-        "events": ["severe", "tropical", "source", "stream"],
+        "events": ["severe", "tropical", "event", "source", "stream"],
         "minimum_interval_seconds": 30,
         "allow_private_targets": False,
     },
@@ -252,6 +278,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "tropical_systems": 16,
         "tropical_track": 18,
         "tropical_local": 14,
+        "event_summary": 12,
+        "map_engine": 18,
+        "map_satellite": 16,
+        "map_lightning": 16,
     },
 }
 
@@ -438,7 +468,25 @@ class ConfigStore:
                 if "encoder_device" not in old_video:
                     merged["video"]["encoder_device"] = "auto"
 
-            merged["version"] = 17
+            if previous_version < 18:
+                # v0.3.0 preserves the single-network layout as a default region.
+                locations = list(merged.get("locations") or [])
+                if locations and not ((raw.get("regions") or {}).get("items") if isinstance(raw.get("regions"), dict) else None):
+                    primary = merged.get("primary_location_id") or locations[0].get("id")
+                    merged["regions"] = {"enabled": False, "items": [{
+                        "id": "default", "name": merged.get("service_area") or "Primary Region", "enabled": True,
+                        "location_ids": [x.get("id") for x in locations if x.get("id")], "primary_location_id": primary,
+                        "station_name": merged.get("station_name"), "callsign": merged.get("station_callsign"),
+                        "slogan": merged.get("station_slogan"), "service_area": merged.get("service_area"),
+                        "theme": merged.get("theme"), "branding_profile": "default",
+                    }]}
+                radar_sequence=list((merged.get("channels") or {}).get("radar_sequence") or [])
+                for slide, after in (("map_engine","radar_local"),("map_satellite","regional_map"),("map_lightning","map_satellite")):
+                    if slide not in radar_sequence:
+                        index=radar_sequence.index(after)+1 if after in radar_sequence else len(radar_sequence); radar_sequence.insert(index,slide)
+                merged["channels"]["radar_sequence"]=radar_sequence
+
+            merged["version"] = 18
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -477,7 +525,7 @@ class ConfigStore:
             raise ValueError("settings payload must be an object")
         with self._lock:
             self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
-            self._settings["version"] = 17
+            self._settings["version"] = 18
             self._save_locked()
         return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
 
@@ -489,17 +537,18 @@ class ConfigStore:
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
             "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video",
             "performance", "custom_profiles", "tts", "notifications", "tropical",
+            "regions", "branding_profiles", "event_channels", "studio",
         }
         with self._lock:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications", "tropical"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications", "tropical", "regions", "branding_profiles", "event_channels", "studio"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 17
+            self._settings["version"] = 18
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -593,6 +642,12 @@ class ConfigStore:
             maps["regional_map_enabled"] = bool(maps.get("regional_map_enabled", True))
             if maps.get("regional_map_view") not in {"local", "regional", "wide"}:
                 maps["regional_map_view"] = "regional"
+            engine2 = _deep_merge(DEFAULT_SETTINGS["maps"]["engine2"], maps.get("engine2") or {})
+            engine2["enabled"] = bool(engine2.get("enabled", True))
+            engine2["refresh_seconds"] = _clamp_int(engine2.get("refresh_seconds"), 120, 3600, 300)
+            layers = engine2.get("layers") if isinstance(engine2.get("layers"), dict) else {}
+            engine2["layers"] = {key: bool(layers.get(key, default)) for key, default in DEFAULT_SETTINGS["maps"]["engine2"]["layers"].items()}
+            maps["engine2"] = engine2
             self._settings["maps"] = maps
 
             storm = self._settings.get("storm_guidance") or {}
@@ -682,6 +737,8 @@ class ConfigStore:
                 encoder_device = str(item.get("encoder_device") or "").strip()
                 if encoder_device == "auto" or re.fullmatch(r"/dev/dri/renderD\d+", encoder_device): row["encoder_device"] = encoder_device
                 if item.get("streaming_mode") in {"always_on", "on_demand"}: row["streaming_mode"] = item.get("streaming_mode")
+                profile_id = re.sub(r"[^a-z0-9_-]+", "-", str(item.get("branding_profile") or "").lower()).strip("-_")[:32]
+                if profile_id: row["branding_profile"] = profile_id
                 if "output_fps" in item: row["output_fps"] = _clamp_int(item.get("output_fps"), 5, 30, 15)
                 if "content_fps" in item: row["content_fps"] = _clamp_int(item.get("content_fps"), 1, 10, 3)
                 if "bitrate" in item:
@@ -708,28 +765,90 @@ class ConfigStore:
             notifications["enabled"] = bool(notifications.get("enabled", False))
             webhook_url = str(notifications.get("webhook_url") or "").strip()[:1000]
             notifications["webhook_url"] = webhook_url if webhook_url.startswith(("http://", "https://")) else ""
-            allowed_events = {"severe", "tropical", "source", "stream", "settings", "lifecycle", "refresh"}
+            allowed_events = {"severe", "tropical", "event", "source", "stream", "settings", "lifecycle", "refresh"}
             notifications["events"] = [str(x) for x in (notifications.get("events") or []) if str(x) in allowed_events] or ["severe", "tropical", "source", "stream"]
             notifications["minimum_interval_seconds"] = _clamp_int(notifications.get("minimum_interval_seconds"), 0, 3600, 30)
             notifications["allow_private_targets"] = bool(notifications.get("allow_private_targets", False))
             self._settings["notifications"] = notifications
+
+            # Multi-region network identity. A location may belong to only one
+            # region so event activation and local branding stay deterministic.
+            locations = {str(x.get("id")) for x in self._settings.get("locations", []) if x.get("id")}
+            regions = self._settings.get("regions") if isinstance(self._settings.get("regions"), dict) else {}
+            clean_regions = []; claimed = set(); seen_regions = set()
+            for index, item in enumerate((regions.get("items") or [])[:12]):
+                if not isinstance(item, dict): continue
+                rid = re.sub(r"[^a-z0-9_-]+", "-", str(item.get("id") or item.get("name") or f"region-{index+1}").lower()).strip("-_")[:32]
+                if not rid or rid in seen_regions: continue
+                members = [str(x) for x in (item.get("location_ids") or []) if str(x) in locations and str(x) not in claimed]
+                primary = str(item.get("primary_location_id") or "")
+                if primary not in members: primary = members[0] if members else ""
+                if not members: continue
+                seen_regions.add(rid); claimed.update(members)
+                theme = str(item.get("theme") or self._settings.get("theme") or "local-90s")
+                if theme not in {"classic-blue", "local-90s", "retro-2000", "terminal-80s", "cable-gold"}: theme = "local-90s"
+                clean_regions.append({
+                    "id": rid, "name": str(item.get("name") or f"Region {index+1}")[:48], "enabled": bool(item.get("enabled", True)),
+                    "location_ids": members, "primary_location_id": primary,
+                    "station_name": str(item.get("station_name") or self._settings.get("station_name") or "")[:40],
+                    "callsign": str(item.get("callsign") or self._settings.get("station_callsign") or "")[:12],
+                    "slogan": str(item.get("slogan") or self._settings.get("station_slogan") or "")[:64],
+                    "service_area": str(item.get("service_area") or "")[:64], "theme": theme,
+                    "branding_profile": re.sub(r"[^a-z0-9_-]+", "-", str(item.get("branding_profile") or "default").lower()).strip("-_")[:32] or "default",
+                })
+            regions["enabled"] = bool(regions.get("enabled", False)); regions["items"] = clean_regions
+            self._settings["regions"] = regions
+
+            profiles = self._settings.get("branding_profiles") if isinstance(self._settings.get("branding_profiles"), dict) else {}
+            clean_profiles = {}
+            for raw_id, item in list(profiles.items())[:24]:
+                if not isinstance(item, dict): continue
+                pid = re.sub(r"[^a-z0-9_-]+", "-", str(raw_id).lower()).strip("-_")[:32]
+                if not pid: continue
+                theme = str(item.get("theme") or "")
+                clean_profiles[pid] = {
+                    "name": str(item.get("name") or pid)[:48], "station_name": str(item.get("station_name") or "")[:40],
+                    "callsign": str(item.get("callsign") or "")[:12], "slogan": str(item.get("slogan") or "")[:64],
+                    "theme": theme if theme in {"classic-blue", "local-90s", "retro-2000", "terminal-80s", "cable-gold"} else "",
+                    "accent_color": str(item.get("accent_color") or "") if re.fullmatch(r"#[0-9a-fA-F]{6}", str(item.get("accent_color") or "")) else "",
+                    "music_folder": re.sub(r"[^A-Za-z0-9 _.-]+", "", str(item.get("music_folder") or ""))[:64],
+                }
+            if "default" not in clean_profiles: clean_profiles["default"] = copy.deepcopy(DEFAULT_SETTINGS["branding_profiles"]["default"])
+            self._settings["branding_profiles"] = clean_profiles
+
+            event_channels = _deep_merge(DEFAULT_SETTINGS["event_channels"], self._settings.get("event_channels") or {})
+            event_channels["enabled"] = bool(event_channels.get("enabled", True)); event_channels["auto_start"] = bool(event_channels.get("auto_start", True))
+            event_channels["cooldown_seconds"] = _clamp_int(event_channels.get("cooldown_seconds"), 0, 86400, 7200)
+            event_channels["types"] = {key: bool((event_channels.get("types") or {}).get(key, True)) for key in DEFAULT_SETTINGS["event_channels"]["types"]}
+            self._settings["event_channels"] = event_channels
+
+            studio = _deep_merge(DEFAULT_SETTINGS["studio"], self._settings.get("studio") or {})
+            studio["enabled"] = bool(studio.get("enabled", True)); studio["published_at"] = studio.get("published_at")
+            studio["sequences"] = studio.get("sequences") if isinstance(studio.get("sequences"), dict) else {}
+            studio["schedules"] = [x for x in (studio.get("schedules") or [])[:32] if isinstance(x, dict)]
+            studio["bumpers"] = [x for x in (studio.get("bumpers") or [])[:24] if isinstance(x, dict)]
+            self._settings["studio"] = studio
 
             valid_slides = {
                 "station_id", "current", "today", "nws_forecast", "hourly", "precipitation",
                 "radar", "radar_local", "radar_regional", "radar_wide", "seven_day", "regional", "almanac",
                 "alert", "alert_radar", "temperature_trend", "storm_outlook", "regional_map",
                 "condition_focus", "weather_history", "spc_outlook", "tropical_update", "tropical_systems", "tropical_track", "tropical_local",
+                "event_summary", "map_engine", "map_satellite", "map_lightning",
             }
             channels = self._settings.get("channels") or {}
-            local_valid = valid_slides - {"alert", "alert_radar", "radar", "radar_local", "radar_regional", "radar_wide", "regional_map"}
-            radar_valid = {"station_id", "radar_local", "radar_regional", "radar_wide", "regional_map", "storm_outlook", "spc_outlook", "current", "alert", "alert_radar"}
-            severe_valid = {"station_id", "current", "spc_outlook", "storm_outlook", "radar_local", "radar_regional", "radar_wide", "regional_map", "alert", "alert_radar", "nws_forecast"}
-            tropics_valid = {"station_id", "tropical_update", "tropical_systems", "tropical_track", "tropical_local", "radar_wide", "radar_regional", "regional_map", "current"}
+            local_valid = valid_slides - {"alert", "alert_radar", "radar", "radar_local", "radar_regional", "radar_wide", "regional_map", "event_summary"}
+            radar_valid = {"station_id", "radar_local", "radar_regional", "radar_wide", "regional_map", "map_engine", "map_satellite", "map_lightning", "storm_outlook", "spc_outlook", "current", "alert", "alert_radar"}
+            severe_valid = {"station_id", "current", "spc_outlook", "storm_outlook", "radar_local", "radar_regional", "radar_wide", "regional_map", "map_engine", "map_lightning", "alert", "alert_radar", "nws_forecast"}
+            tropics_valid = {"station_id", "tropical_update", "tropical_systems", "tropical_track", "tropical_local", "radar_wide", "radar_regional", "regional_map", "map_satellite", "map_engine", "current"}
             channels["zip_sequence"] = [x for x in (channels.get("zip_sequence") or []) if x in local_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["zip_sequence"])
             channels["radar_sequence"] = [x for x in (channels.get("radar_sequence") or []) if x in radar_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["radar_sequence"])
             channels["severe_idle_sequence"] = [x for x in (channels.get("severe_idle_sequence") or []) if x in severe_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["severe_idle_sequence"])
             channels["tropics_sequence"] = [x for x in (channels.get("tropics_sequence") or []) if x in tropics_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["tropics_sequence"])
             self._settings["channels"] = channels
+            event_channels = self._settings["event_channels"]
+            event_valid = valid_slides - {"station_id", "tropical_update", "tropical_systems", "tropical_track", "tropical_local"}
+            event_channels["sequences"] = {kind: [x for x in ((event_channels.get("sequences") or {}).get(kind) or []) if x in event_valid] or copy.deepcopy(default) for kind, default in DEFAULT_SETTINGS["event_channels"]["sequences"].items()}
             dayparts = self._settings.get("dayparts") or {}
             sequences = dayparts.get("sequences") if isinstance(dayparts.get("sequences"), dict) else {}
             clean_sequences = {}

@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.2.6 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.3.0 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.2.6</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.0</div>
       <h1>Channel Configuration</h1>
     </div>
-    <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
+    <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/studio">Studio</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
   </header>
 
   <div id="flash" class="flash hidden"></div>
@@ -23,6 +23,25 @@
     <input id="settingsSearch" type="search" placeholder="Try: radar, restart, webhook, ZIP…" aria-label="Search settings">
     <div class="impact-legend"><span class="pill ok">HOT — immediate</span><span class="pill">REFRESH — reloads data</span><span class="pill bad">RESTART — encoder restart</span></div>
     <p id="settingsSearchState" class="hint top-gap"></p>
+  </section>
+
+  <section class="grid two">
+    <article class="card">
+      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.0</span></div>
+      <label class="checkbox"><input id="regionsEnabled" type="checkbox"> Enable explicit multi-region assignments</label>
+      <div class="form-grid"><label>Region name<input id="regionName" placeholder="Gulf Coast"></label><label>Callsign<input id="regionCallsign" maxlength="12" placeholder="RWN-GC"></label><label>Theme<select id="regionTheme"><option value="local-90s">Local Cable 90s</option><option value="classic-blue">Classic Blue</option><option value="retro-2000">Retro 2000</option><option value="terminal-80s">Weather Terminal 80s</option><option value="cable-gold">Cable Gold</option></select></label><label>Branding profile<input id="regionBranding" value="default" maxlength="32"></label><label>Locations<select id="regionLocations" multiple size="4"></select></label></div>
+      <button class="button ghost" type="button" onclick="addRegion()">Add Region</button><div id="regionList" class="locations top-gap"></div><button class="button top-gap" onclick="saveGeneral()">Save Network Regions</button>
+    </article>
+    <article class="card">
+      <div class="card-head"><div><h2>Channel Branding Profiles</h2><p>Reusable station identity, accent, theme, logo slot, and optional music subfolder.</p></div><span class="pill">BRANDING</span></div>
+      <div class="form-grid"><label>Profile ID<input id="profileId" placeholder="gulf"></label><label>Name<input id="profileLabel" placeholder="Gulf Coast"></label><label>Station name<input id="profileStation" placeholder="RWN Gulf Coast"></label><label>Callsign<input id="profileCallsign" maxlength="12" placeholder="RWN-G"></label><label>Slogan<input id="profileSlogan" maxlength="64" placeholder="Gulf Weather 24/7"></label><label>Theme<select id="profileTheme"><option value="">Inherit</option><option value="local-90s">Local Cable 90s</option><option value="classic-blue">Classic Blue</option><option value="retro-2000">Retro 2000</option><option value="terminal-80s">Weather Terminal 80s</option><option value="cable-gold">Cable Gold</option></select></label><label>Accent<input id="profileAccent" type="color" value="#ffd447"></label><label>Music subfolder<input id="profileMusic" placeholder="gulf"></label><label>Profile logo<input id="profileLogo" type="file" accept="image/png,image/jpeg,image/webp"></label></div>
+      <div class="row-actions"><button class="button ghost" type="button" onclick="addBrandingProfile()">Add / Update Profile</button><button class="button ghost" type="button" onclick="uploadProfileLogo()">Upload Profile Logo</button></div><div id="profileList" class="locations top-gap"></div><button class="button top-gap" onclick="saveGeneral()">Save Branding Profiles</button>
+    </article>
+  </section>
+
+  <section class="grid two">
+    <article class="card"><div class="card-head"><div><h2>Automatic Event Channels</h2><p>Standing IPTV channels wake from matching official NWS alerts and remain available through a cooldown.</p></div><span class="pill">AUTOMATIC</span></div><div class="form-grid"><label class="checkbox"><input id="eventsEnabled" type="checkbox"> Publish event channels</label><label class="checkbox"><input id="eventsAutoStart" type="checkbox"> Auto-start matched channels</label><label>Cooldown (hours)<input id="eventsCooldown" type="number" min="0" max="24"></label><label class="checkbox"><input class="event-type" value="tornado" type="checkbox"> Tornado</label><label class="checkbox"><input class="event-type" value="flood" type="checkbox"> Flood</label><label class="checkbox"><input class="event-type" value="winter" type="checkbox"> Winter</label><label class="checkbox"><input class="event-type" value="wildfire" type="checkbox"> Wildfire</label><label class="checkbox"><input class="event-type" value="heat" type="checkbox"> Extreme heat</label></div><button class="button" onclick="saveGeneral()">Save Event Channels</button></article>
+    <article class="card"><div class="card-head"><div><h2>Map Engine 2.0</h2><p>Observed radar, official GOES-19 satellite/lightning imagery, warnings, cities, boundaries, and tropical context.</p></div><span class="pill">NOAA LAYERS</span></div><div class="form-grid"><label class="checkbox"><input id="map2Enabled" type="checkbox"> Enable Map Engine 2.0</label><label>Imagery refresh (seconds)<input id="map2Refresh" type="number" min="120" max="3600"></label><label class="checkbox"><input class="map2-layer" value="radar" type="checkbox"> Radar</label><label class="checkbox"><input class="map2-layer" value="satellite" type="checkbox"> Satellite</label><label class="checkbox"><input class="map2-layer" value="lightning" type="checkbox"> Lightning</label><label class="checkbox"><input class="map2-layer" value="alerts" type="checkbox"> Warning polygons</label><label class="checkbox"><input class="map2-layer" value="tropical_tracks" type="checkbox"> Tropical tracks</label><label class="checkbox"><input class="map2-layer" value="city_labels" type="checkbox"> City labels</label><label class="checkbox"><input class="map2-layer" value="boundaries" type="checkbox"> Boundaries</label></div><button class="button" onclick="saveGeneral()">Save Map Engine</button></article>
   </section>
 
   <section class="grid two">
@@ -100,7 +119,7 @@
         <h2>Presentation</h2>
         <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.2.6</span>
+      <span class="pill">v0.3.0</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -425,6 +444,7 @@
       <label class="checkbox"><input class="notification-event" value="source" type="checkbox"> Data-source health</label>
       <label class="checkbox"><input class="notification-event" value="stream" type="checkbox"> Stream lifecycle</label>
       <label class="checkbox"><input class="notification-event" value="settings" type="checkbox"> Settings changes</label>
+      <label class="checkbox"><input class="notification-event" value="event" type="checkbox"> Automatic event channels</label>
       <label class="checkbox"><input class="notification-event" value="refresh" type="checkbox"> Manual refreshes</label>
       <label class="checkbox"><input class="notification-event" value="lifecycle" type="checkbox"> Container lifecycle</label>
     </div>
@@ -503,6 +523,8 @@ async function loadSettings() {
   cityRadiusMiles.value = settings.maps?.city_radius_miles || 180;
   regionalMapEnabled.checked = settings.maps?.regional_map_enabled !== false;
   regionalMapView.value = settings.maps?.regional_map_view || 'regional';
+  const map2=settings.maps?.engine2||{}; map2Enabled.checked=map2.enabled!==false;map2Refresh.value=map2.refresh_seconds||300;
+  document.querySelectorAll('.map2-layer').forEach(x=>x.checked=(map2.layers||{})[x.value]!==false);
   stormGuidanceEnabled.checked = settings.storm_guidance?.enabled !== false;
   stormGuidanceRefresh.value = settings.storm_guidance?.refresh_seconds || 900;
   logoPreview.style.display = '';
@@ -616,6 +638,7 @@ async function loadSettings() {
   tropicalRadius.value = tropical.activation_radius_miles ?? 750;
   tropicalThreshold.value = tropical.gulf_development_threshold ?? 40;
   tropicalCooldownHours.value = Math.round((tropical.cooldown_seconds ?? 21600) / 3600);
+  const events=settings.event_channels||{};eventsEnabled.checked=events.enabled!==false;eventsAutoStart.checked=events.auto_start!==false;eventsCooldown.value=Math.round((events.cooldown_seconds??7200)/3600);document.querySelectorAll('.event-type').forEach(x=>x.checked=(events.types||{})[x.value]!==false);
   perfRenderFps.value = settings.video?.render_fps ?? 5;
   perfContentFps.value = settings.video?.content_fps ?? 3;
   perfOutputFps.value = settings.video?.output_fps ?? 15;
@@ -632,6 +655,7 @@ async function loadSettings() {
   const selectedNotificationEvents = new Set(notifications.events || []);
   document.querySelectorAll('.notification-event').forEach(box => box.checked = selectedNotificationEvents.has(box.value));
   renderLocations();
+  renderV3Settings();
 }
 musicVolume.addEventListener('input', () => volumeValue.textContent = musicVolume.value + '%');
 
@@ -653,6 +677,17 @@ function renderLocations() {
       </div>
     </div>`).join('');
 }
+
+function renderV3Settings(){
+  regionsEnabled.checked=!!settings.regions?.enabled;const assigned=new Set((settings.regions?.items||[]).flatMap(x=>x.location_ids||[]));regionLocations.innerHTML=(settings.locations||[]).map(x=>`<option value="${x.id}">${x.name}, ${x.admin1} (${x.postal_code})${assigned.has(x.id)?' • assigned':''}</option>`).join('');
+  regionList.innerHTML=(settings.regions?.items||[]).map((x,i)=>`<div class="location-row"><div><strong>${x.name}</strong><span>${x.callsign||'RWN'} • ${(x.location_ids||[]).length} location(s) • ${x.theme}</span></div><button class="button ghost mini" type="button" onclick="removeRegion(${i})">Remove</button></div>`).join('')||'<div class="empty">Compatibility mode uses one primary region.</div>';
+  profileList.innerHTML=Object.entries(settings.branding_profiles||{}).map(([id,x])=>`<div class="location-row"><div><strong>${x.name||id}</strong><span>${id} • ${x.theme||'inherit'} • ${x.music_folder||'global music'}</span></div>${id==='default'?'':`<button class="button ghost mini" type="button" onclick="removeBrandingProfile('${id}')">Remove</button>`}</div>`).join('');
+}
+function addRegion(){const ids=[...regionLocations.selectedOptions].map(x=>x.value);if(!regionName.value.trim()||!ids.length)return notify('Give the region a name and select at least one unassigned location.',true);const id=regionName.value.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-|-$/g,'').slice(0,32);settings.regions=settings.regions||{enabled:true,items:[]};settings.regions.items=(settings.regions.items||[]).filter(x=>x.id!==id);settings.regions.items.push({id,name:regionName.value.trim(),enabled:true,location_ids:ids,primary_location_id:ids[0],station_name:stationName.value.trim(),callsign:regionCallsign.value.trim()||stationCallsign.value.trim(),slogan:stationSlogan.value.trim(),service_area:regionName.value.trim(),theme:regionTheme.value,branding_profile:regionBranding.value.trim()||'default'});regionsEnabled.checked=true;regionName.value='';renderV3Settings()}
+function removeRegion(i){settings.regions.items.splice(i,1);renderV3Settings()}
+function addBrandingProfile(){const id=profileId.value.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-|-$/g,'').slice(0,32);if(!id)return notify('Enter a profile ID.',true);settings.branding_profiles=settings.branding_profiles||{};settings.branding_profiles[id]={name:profileLabel.value.trim()||id,station_name:profileStation.value.trim(),callsign:profileCallsign.value.trim(),slogan:profileSlogan.value.trim(),theme:profileTheme.value,accent_color:profileAccent.value,music_folder:profileMusic.value.trim()};renderV3Settings()}
+async function uploadProfileLogo(){const id=profileId.value.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-|-$/g,'').slice(0,32),file=profileLogo.files?.[0];if(!id||!file)return notify('Save a profile ID and choose a logo first.',true);addBrandingProfile();await saveGeneral();try{await jfetch(`/api/branding/profiles/${id}/logo`,{method:'PUT',headers:{'Content-Type':file.type||'application/octet-stream'},body:file});notify('Profile logo uploaded.')}catch(e){notify(e.message,true)}}
+function removeBrandingProfile(id){delete settings.branding_profiles[id];renderV3Settings()}
 
 async function addZip() {
   const postal = zipInput.value.trim();
@@ -708,8 +743,12 @@ async function saveGeneral() {
       city_max_labels: Number(cityMaxLabels.value || 10),
       city_radius_miles: Number(cityRadiusMiles.value || 180),
       regional_map_enabled: regionalMapEnabled.checked,
-      regional_map_view: regionalMapView.value
+      regional_map_view: regionalMapView.value,
+      engine2:{enabled:map2Enabled.checked,refresh_seconds:Number(map2Refresh.value||300),layers:Object.fromEntries([...document.querySelectorAll('.map2-layer')].map(x=>[x.value,x.checked]))}
     },
+    regions:{enabled:regionsEnabled.checked,items:settings.regions?.items||[]},
+    branding_profiles:settings.branding_profiles||{},
+    event_channels:{enabled:eventsEnabled.checked,auto_start:eventsAutoStart.checked,cooldown_seconds:Number(eventsCooldown.value||0)*3600,types:Object.fromEntries([...document.querySelectorAll('.event-type')].map(x=>[x.value,x.checked]))},
     storm_guidance: {enabled: stormGuidanceEnabled.checked, refresh_seconds: Number(stormGuidanceRefresh.value || 900)},
     spc: {enabled: spcEnabled.checked, refresh_seconds: Number(spcRefresh.value || 900), minimum_smart_risk: spcMinimum.value},
     history: {enabled: historyEnabled.checked, retention_days: Number(historyRetention.value || 90)},

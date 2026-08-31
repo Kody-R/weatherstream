@@ -67,7 +67,7 @@ class TropicalManager:
         self.config_store = config_store
         self._lock = threading.RLock(); self._stop = threading.Event(); self._wake = threading.Event()
         self._thread: threading.Thread | None = None; self._revision = 0
-        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=False, headers={"User-Agent":"WeatherStream/0.2.6 (RWN Tropics Watch)"}, limits=httpx.Limits(max_connections=6,max_keepalive_connections=4))
+        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=False, headers={"User-Agent":"WeatherStream/0.3.0 (RWN Tropics Watch)"}, limits=httpx.Limits(max_connections=6,max_keepalive_connections=4))
         self._snapshot: dict[str, Any] = {"systems":[],"outlook":{},"last_update":None,"last_error":None}
         self._last_trigger_at: float | None = None; self._activation_state = False; self._activation_reasons: list[str] = []
 

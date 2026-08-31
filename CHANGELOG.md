@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- Region-scoped Tornado, Flood, Winter Weather, Wildfire, and Extreme Heat event channels with NWS-alert activation and cooldown retention
+- Map Engine 2.0 with configurable radar, warnings, cities, boundaries, tropical-track, GOES-19 GeoColor, and GLM lightning products
+- WeatherStream Studio rundown editor, draggable sequence ordering, preview workflow, bumper builder, and region/channel/daypart schedules
+- Multi-region location assignment, region identity, region-centered radar caches, and scoped IPTV identifiers
+- Reusable branding profiles with station identity, theme, accent, profile logo, and music-subfolder support
+- Per-source refresh API and Dashboard buttons
+- Schema 18 migration and v0.3.0 regression coverage
+
+### Changed
+
+- Radar channel defaults now include Map Engine 2.0, satellite, and lightning slides
+- Channel catalog includes disabled standby channels, region metadata, and resolved branding profiles
+- IPTV playlists select profile logos when present
+- Source status now includes NOAA satellite and lightning freshness
+
+### Reliability
+
+- NOAA imagery uses last-known-good in-memory caching and never performs network I/O in the render loop
+- Region assignments are normalized so a location cannot activate two regions ambiguously
+- Older single-region settings migrate without changing existing station identity or lineup overrides
+
 ## 0.2.6
 
 ### Added

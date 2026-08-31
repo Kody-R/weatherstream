@@ -1,5 +1,8 @@
 .git
 .github
+.venv
+.pytest_cache
+.test-*
 __pycache__
 *.pyc
 config/*

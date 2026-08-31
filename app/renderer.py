@@ -13,7 +13,10 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageEnhance, ImageFilter
 
 from app.config import CONFIG_DIR
+from app.events import EVENT_TYPES
+from app.network import apply_region_identity, region_for_location
 from app.radar import latlon_to_world
+from app.studio import active_sequence, bumper
 
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -181,7 +184,7 @@ def draw_weather_icon(draw: ImageDraw.ImageDraw, code: int | None, x: int, y: in
 
 
 class WeatherRenderer:
-    def __init__(self, config_store, weather_manager, radar_manager=None, place_manager=None, history_store=None, spc_manager=None, tropical_manager=None) -> None:
+    def __init__(self, config_store, weather_manager, radar_manager=None, place_manager=None, history_store=None, spc_manager=None, tropical_manager=None, imagery_manager=None, event_manager=None) -> None:
         self.config_store = config_store
         self.weather_manager = weather_manager
         self.radar_manager = radar_manager
@@ -189,6 +192,8 @@ class WeatherRenderer:
         self.history_store = history_store
         self.spc_manager = spc_manager
         self.tropical_manager = tropical_manager
+        self.imagery_manager = imagery_manager
+        self.event_manager = event_manager
         self.cycle_started = dt.datetime.now().timestamp()
         self._logo_cache = None
         self._logo_mtime = None
@@ -203,7 +208,10 @@ class WeatherRenderer:
         self._context_misses = 0
 
     def _theme(self, settings: dict[str, Any]) -> dict[str, str]:
-        return THEMES.get(settings.get("theme", "local-90s"), THEMES["local-90s"])
+        colors = dict(THEMES.get(settings.get("theme", "local-90s"), THEMES["local-90s"]))
+        accent = (settings.get("_branding_profile") or {}).get("accent_color")
+        if accent: colors["accent"] = accent; colors["title"] = accent
+        return colors
 
     def _primary(self, settings: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
         pid = settings.get("primary_location_id")
@@ -338,6 +346,10 @@ class WeatherRenderer:
             # sequence merely because the clock is inside the scheduled trigger
             # window. This lets the block finish naturally even after that window.
             wanted = self._smart_wanted(settings, snapshot, now if now is not None else dt.datetime.now().timestamp())
+            region_id = str((settings.get("_region") or {}).get("id") or "default")
+            studio_sequence = active_sequence(settings, region_id, str(settings.get("_channel_mode") or "local"), self._local_datetime(snapshot, settings, now or dt.datetime.now().timestamp()))
+            if studio_sequence:
+                wanted = studio_sequence
 
         tropical = settings.get("_tropical") or {}
         if settings.get("_channel_mode") == "local" and tropical.get("segment_active") and "tropical_update" not in wanted:
@@ -346,6 +358,9 @@ class WeatherRenderer:
 
         seq = []
         for name in wanted:
+            if str(name).startswith("bumper:"):
+                item = bumper(settings, str(name).split(":", 1)[1]) or {}
+                seq.append((str(name), max(3, min(30, int(item.get("duration", 6)))))); continue
             if name == "station_id" and not pres.get("show_station_id", True):
                 continue
             if name in radar_name_to_view:
@@ -362,6 +377,10 @@ class WeatherRenderer:
                 continue
             if name == "weather_history" and not (settings.get("history") or {}).get("enabled", True):
                 continue
+            engine_layers=(((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {})
+            if name == "map_engine" and not ((settings.get("maps") or {}).get("engine2") or {}).get("enabled", True): continue
+            if name == "map_satellite" and not engine_layers.get("satellite", True): continue
+            if name == "map_lightning" and not engine_layers.get("lightning", True): continue
             if name.startswith("tropical_") and not (settings.get("tropical") or {}).get("enabled", True):
                 continue
             fallback = durations.get("radar", 16) if name.startswith("radar") or name == "alert_radar" else 10
@@ -450,6 +469,12 @@ class WeatherRenderer:
         elif name == "tropical_systems": self._draw_tropical_systems(draw, w, h, settings, primary, c)
         elif name == "tropical_track": self._draw_tropical_track(draw, w, h, settings, primary, c, now)
         elif name == "tropical_local": self._draw_tropical_local(draw, w, h, settings, primary, c)
+        elif name == "event_summary": self._draw_event_summary(draw, w, h, settings, snapshot, primary, c)
+        elif name == "map_engine":
+            self._draw_map_engine(img, draw, w, h, settings, snapshot, primary, c, now, progress)
+        elif name in {"map_satellite", "map_lightning"}:
+            self._draw_goes_product(img, ImageDraw.Draw(img), w, h, settings, c, "satellite" if name == "map_satellite" else "lightning")
+        elif name.startswith("bumper:"): self._draw_studio_bumper(draw, w, h, settings, name.split(":", 1)[1], c)
         elif name == "condition_focus": self._draw_condition_focus(draw, w, h, settings, primary, c)
         elif name == "weather_history": self._draw_weather_history(draw, w, h, settings, primary, c)
         elif name == "seven_day": self._draw_seven_day(draw, w, h, settings, primary, c)
@@ -495,6 +520,11 @@ class WeatherRenderer:
         else:
             settings["_render_location_id"] = settings.get("primary_location_id")
 
+        region = region_for_location(settings, settings.get("_render_location_id"))
+        apply_region_identity(settings, region)
+        if region and channel_mode != "local":
+            settings["primary_location_id"] = region.get("primary_location_id") or settings.get("primary_location_id")
+
         channels = settings.get("channels") or {}
         if channel_mode == "local":
             # Per-ZIP local channels intentionally leave shared radar/map products to
@@ -528,6 +558,15 @@ class WeatherRenderer:
             settings.setdefault("smart_programming", {})["enabled"] = False
             settings["presentation"]["sequence"] = list(channels.get("tropics_sequence") or ["tropical_update","tropical_systems","tropical_track","tropical_local","radar_wide"])
             settings["station_slogan"] = "RWN TROPICS WATCH • OFFICIAL NHC DATA • GULF FOCUS"
+        elif channel_mode.startswith("event_"):
+            event_type=channel_mode.removeprefix("event_"); event_cfg=settings.get("event_channels") or {}
+            settings.setdefault("presentation", {}).setdefault("scheduled_updates", {})["enabled"] = False
+            settings.setdefault("dayparts", {})["enabled"] = False; settings.setdefault("smart_programming", {})["enabled"] = False
+            settings["presentation"]["sequence"] = list((event_cfg.get("sequences") or {}).get(event_type) or ["event_summary","alert","current","nws_forecast","radar_regional"])
+            settings["station_slogan"] = f"AUTOMATIC {(EVENT_TYPES.get(event_type) or {}).get('name','WEATHER EVENT').upper()} COVERAGE • OFFICIAL ALERTS"
+            if self.event_manager and region:
+                event_status=self.event_manager.evaluate(str(region.get("id")),event_type); settings["_event"] = event_status
+                if event_status.get("alerts"): snapshot["alerts"] = event_status["alerts"]
         settings["_channel_mode"] = channel_mode
         if self.spc_manager:
             settings["_spc_outlook"] = (self.spc_manager.snapshot(settings.get("_render_location_id") or settings.get("primary_location_id")).get("outlook") or {})
@@ -585,6 +624,8 @@ class WeatherRenderer:
             settings["presentation"] = presentation
         if overrides.get("theme"):
             settings["theme"] = overrides["theme"]
+        if overrides.get("branding_profile"):
+            apply_region_identity(settings, settings.get("_region"), str(overrides["branding_profile"]))
         if "transition" in overrides:
             settings.setdefault("presentation", {})["transition"] = overrides["transition"]
         if "retro_enabled" in overrides:
@@ -640,8 +681,8 @@ class WeatherRenderer:
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720)); c = self._theme(settings)
         if not primary:
             out = Image.new("RGB", (w,h), c["bg"]); self._paint_background(out,c,settings,dt.datetime.now().timestamp()); d=ImageDraw.Draw(out); self._draw_setup(d,w,h,settings,c); self._draw_footer(d,w,h,settings,snapshot,c,dt.datetime.now().timestamp()); return out
-        valid = {"station_id","current","condition_focus","today","nws_forecast","temperature_trend","hourly","precipitation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar"}
-        if slide_name not in valid: slide_name = "current"
+        valid = {"station_id","current","condition_focus","today","nws_forecast","temperature_trend","hourly","precipitation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar","event_summary","map_engine","map_satellite","map_lightning"}
+        if slide_name not in valid and not slide_name.startswith("bumper:"): slide_name = "current"
         snap = snapshot
         if test_alert:
             snap = dict(snapshot); snap["alerts"] = list(snapshot.get("alerts") or [])
@@ -837,7 +878,9 @@ class WeatherRenderer:
 
     def _load_logo(self, settings):
         cfg = settings.get("branding") or {}
-        path = BRANDING_LOGO if BRANDING_LOGO.exists() else (BUILTIN_RWN_LOGO if cfg.get("use_builtin_logo", True) else BRANDING_LOGO)
+        profile_id = str(settings.get("_branding_profile_id") or "default")
+        profile_logo = CONFIG_DIR / "branding" / "profiles" / f"{profile_id}.png"
+        path = profile_logo if profile_id != "default" and profile_logo.exists() else BRANDING_LOGO if BRANDING_LOGO.exists() else (BUILTIN_RWN_LOGO if cfg.get("use_builtin_logo", True) else BRANDING_LOGO)
         try:
             mtime = path.stat().st_mtime
             cache_key = (str(path), mtime)
@@ -1011,7 +1054,8 @@ class WeatherRenderer:
         map_box=(54,112,w-54,h-108)
         round_rect(draw,(map_box[0]-7,map_box[1]-7,map_box[2]+7,map_box[3]+7),12,c["panel2"],outline=c["muted"],width=2)
         target_w, target_h = map_box[2]-map_box[0], map_box[3]-map_box[1]
-        base=self.radar_manager.resized_map(view, target_w, target_h) if self.radar_manager and hasattr(self.radar_manager, "resized_map") else self.radar_manager.map_snapshot(view, copy_image=False) if self.radar_manager else None
+        location_id=str((p.get("location") or {}).get("id") or settings.get("_render_location_id") or "")
+        base=self.radar_manager.resized_map(view, target_w, target_h, location_id=location_id) if self.radar_manager and hasattr(self.radar_manager, "resized_map") else self.radar_manager.map_snapshot(view, copy_image=False, location_id=location_id) if self.radar_manager else None
         if base is None:
             draw.text((w//2,330),"REGIONAL MAP IS LOADING",font=font(36,bold=True),fill=c["accent"],anchor="mm")
             draw.text((w//2,385),"It will appear after the first map/radar refresh.",font=font(20),fill=c["muted"],anchor="mm")
@@ -1398,6 +1442,75 @@ class WeatherRenderer:
         draw.text((76,558),"Follow evacuation and protective-action instructions from local officials.",font=font(20),fill=c["text"])
         draw.text((76,591),"The forecast track shows center positions, not the full size of hazardous impacts.",font=font(16),fill=c["muted"])
 
+    def _draw_event_summary(self, draw, w, h, settings, snapshot, p, c):
+        status=settings.get("_event") or {}; event_type=str(status.get("event_type") or settings.get("_channel_mode","").removeprefix("event_"))
+        definition=EVENT_TYPES.get(event_type) or {}; title=str(definition.get("name") or "Weather Event")
+        self._header(draw,w,title,"AUTOMATIC EVENT CHANNEL",c)
+        alerts=status.get("alerts") or snapshot.get("alerts") or []; active=bool(status.get("active")); cooling=bool(status.get("cooldown_active"))
+        state="ACTIVE OFFICIAL ALERTS" if active else "POST-EVENT MONITORING" if cooling else "STANDING BY"
+        color=str(definition.get("color") or c["accent"])
+        round_rect(draw,(65,130,w-65,230),16,c["panel2"],outline=color,width=4)
+        draw.text((w//2,180),state,font=font(38,bold=True,mono=True),fill=color,anchor="mm")
+        if alerts:
+            y=270
+            for alert in alerts[:3]:
+                round_rect(draw,(80,y,w-80,y+78),12,c["panel"])
+                draw.text((105,y+13),str(alert.get("event") or title).upper()[:70],font=font(24,bold=True),fill=c["title"])
+                draw.text((105,y+48),str(alert.get("areaDesc") or alert.get("headline") or "Local service area")[:105],font=font(15,mono=True),fill=c["muted"]); y+=94
+        else:
+            draw.text((w//2,328),f"No active {title.lower()} alert is currently matched.",font=font(27,bold=True),fill=c["text"],anchor="mm")
+            draw.text((w//2,382),"This channel starts automatically when an official NWS alert qualifies.",font=font(19),fill=c["muted"],anchor="mm")
+        draw.text((w//2,590),"SOURCE: NOAA / NATIONAL WEATHER SERVICE • FOLLOW LOCAL OFFICIAL INSTRUCTIONS",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_goes_product(self, img, draw, w, h, settings, c, product):
+        title="GOES-19 GeoColor Satellite" if product=="satellite" else "GOES-19 Lightning Mapper"
+        image=self.imagery_manager.snapshot(product) if self.imagery_manager else None
+        box=(45,108,w-45,h-94); round_rect(draw,(37,100,w-37,h-86),12,c["panel2"],outline=c["muted"],width=2)
+        if image:
+            target_w,target_h=box[2]-box[0],box[3]-box[1]; image.thumbnail((target_w,target_h),Image.Resampling.LANCZOS)
+            canvas=Image.new("RGB",(target_w,target_h),"#061523"); canvas.paste(image,((target_w-image.width)//2,(target_h-image.height)//2)); img.paste(canvas,(box[0],box[1]))
+        else:
+            draw.text((w//2,h//2),"OFFICIAL NOAA IMAGERY TEMPORARILY UNAVAILABLE",font=font(30,bold=True),fill=c["accent"],anchor="mm")
+        draw=ImageDraw.Draw(img); draw.rectangle((45,108,w-45,172),fill="#071a2ce6")
+        draw.text((70,121),title,font=font(30,bold=True),fill="#ffffff"); draw.text((w-70,132),"NOAA NESDIS / STAR",font=font(14,bold=True,mono=True),fill=c["accent"],anchor="ra")
+
+    def _draw_map_engine_badge(self, draw, w, settings, c):
+        layers=((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {}
+        active=" • ".join(key.upper().replace("_"," ") for key,value in layers.items() if value)
+        draw.rectangle((55,112,w-55,150),fill="#061827")
+        draw.text((72,121),"MAP ENGINE 2.0",font=font(17,bold=True,mono=True),fill=c["accent"])
+        draw.text((w-72,122),active[:92],font=font(12,bold=True,mono=True),fill="#ffffff",anchor="ra")
+
+    def _draw_map_engine(self, img, draw, w, h, settings, snapshot, p, c, now, progress):
+        layers=(((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {})
+        scoped=copy.deepcopy(settings)
+        scoped.setdefault("maps",{})["auto_city_labels"]=bool(layers.get("city_labels",True))
+        scoped.setdefault("alerts",{})["show_polygons"]=bool(layers.get("alerts",True))
+        if layers.get("radar",True): self._draw_radar(img,draw,w,h,scoped,p,c,now,progress,view="regional",snapshot=snapshot)
+        else: self._draw_regional_map(img,draw,w,h,scoped,snapshot,p,c)
+        draw=ImageDraw.Draw(img); map_box=(58,116,w-58,h-112); loc=p.get("location") or {}; zoom=int((((settings.get("radar") or {}).get("views") or {}).get("regional") or {}).get("zoom",6))
+        if layers.get("tropical_tracks",True):
+            for storm in ((settings.get("_tropical") or {}).get("systems") or [])[:4]:
+                points=list(storm.get("track") or [])
+                if storm.get("latitude") is not None and storm.get("longitude") is not None: points.insert(0,[storm["latitude"],storm["longitude"]])
+                plotted=[]
+                for lat,lon in points:
+                    try:
+                        x,y=self._project_to_map(lat,lon,loc["latitude"],loc["longitude"],zoom,map_box)
+                        if map_box[0]<=x<=map_box[2] and map_box[1]<=y<=map_box[3]: plotted.append((x,y))
+                    except Exception: pass
+                if len(plotted)>1: draw.line(plotted,fill="#ffda44",width=5,joint="curve")
+                for x,y in plotted: draw.ellipse((x-5,y-5,x+5,y+5),fill="#ffda44",outline="#071820",width=2)
+        self._draw_map_engine_badge(draw,w,settings,c)
+
+    def _draw_studio_bumper(self, draw, w, h, settings, bumper_id, c):
+        item=bumper(settings,bumper_id) or {"title":"ROLLER WEATHER NETWORK","subtitle":"WEATHER UPDATE","accent":c["accent"]}
+        accent=str(item.get("accent") or c["accent"]); draw.rectangle((0,0,w,18),fill=accent); draw.rectangle((0,h-104,w,h-86),fill=accent)
+        draw.text((w//2,245),str(item.get("title") or "ROLLER WEATHER NETWORK").upper()[:48],font=font(54,bold=True),fill=c["title"],anchor="mm")
+        draw.line((250,310,w-250,310),fill=accent,width=4)
+        draw.text((w//2,375),str(item.get("subtitle") or "WEATHER UPDATE").upper()[:64],font=font(28,bold=True,mono=True),fill=accent,anchor="mm")
+        draw.text((w//2,475),str(settings.get("service_area") or "LOCAL • REGIONAL • ALWAYS READY").upper(),font=font(19,mono=True),fill=c["muted"],anchor="mm")
+
     def _draw_seven_day(self, draw, w, h, settings, p, c):
         self._header(draw, w, "7-Day Forecast", location_label(p["location"]), c)
         daily = p.get("daily", {})
@@ -1452,7 +1565,8 @@ class WeatherRenderer:
             self._header(draw, w, "Severe Weather Radar", alert.get("event", "WEATHER ALERT").upper(), c)
         else:
             self._header(draw, w, view_titles.get(view, "Local Radar"), location_label(loc), c)
-        radar = self.radar_manager.snapshot(view, copy_images=False) if self.radar_manager else {"frames": [], "last_error": "Radar manager unavailable"}
+        location_id=str(loc.get("id") or settings.get("_render_location_id") or "")
+        radar = self.radar_manager.snapshot(view, copy_images=False, location_id=location_id) if self.radar_manager else {"frames": [], "last_error": "Radar manager unavailable"}
         frames = radar.get("frames") or []
         radar_cfg = settings.get("radar", {})
         view_cfg = (radar_cfg.get("views") or {}).get(view) or {}

@@ -178,6 +178,10 @@ class ChannelWorker:
 
     def _effective_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         override = self._channel_override(settings)
+        profile_id = str(override.get("branding_profile") or "")
+        profile = (settings.get("branding_profiles") or {}).get(profile_id) if profile_id else None
+        if isinstance(profile, dict) and profile.get("music_folder"):
+            settings.setdefault("music", {})["folder"] = str(profile["music_folder"])
         if override.get("theme"):
             settings["theme"] = override["theme"]
         if "music_enabled" in override:
@@ -196,7 +200,7 @@ class ChannelWorker:
 
     def _runtime_render_overrides(self, settings: dict[str, Any]) -> dict[str, Any]:
         override = self._channel_override(settings)
-        runtime = {k: override[k] for k in ("theme", "retro_enabled", "transition") if k in override}
+        runtime = {k: override[k] for k in ("theme", "retro_enabled", "transition", "branding_profile") if k in override}
         if self._adaptive_degraded:
             runtime["performance_degraded"] = True
         return runtime
@@ -606,7 +610,10 @@ class ChannelWorker:
         music = settings.get("music", {})
         if not music.get("enabled", True) or not MUSIC_DIR.exists():
             return None
-        files = [p for p in MUSIC_DIR.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+        folder = str(music.get("folder") or "").strip()
+        source = MUSIC_DIR / folder if folder and (MUSIC_DIR / folder).resolve().parent == MUSIC_DIR.resolve() else MUSIC_DIR
+        if not source.exists() or not source.is_dir(): source = MUSIC_DIR
+        files = [p for p in source.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
         if not files:
             return None
         if music.get("shuffle", True): random.shuffle(files)
@@ -922,11 +929,12 @@ class Streamer:
     timeout once viewer requests stop.
     """
 
-    def __init__(self, config_store, renderer, tts_manager, tropical_manager=None) -> None:
+    def __init__(self, config_store, renderer, tts_manager, tropical_manager=None, event_manager=None) -> None:
         self.config_store = config_store
         self.renderer = renderer
         self.tts_manager = tts_manager
         self.tropical_manager = tropical_manager
+        self.event_manager = event_manager
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._lock = threading.RLock()
@@ -1027,6 +1035,7 @@ class Streamer:
         channels = settings.get("channels") or {}
         severe_auto = bool(channels.get("severe_auto_start", True))
         tropical_auto = bool((settings.get("tropical") or {}).get("auto_start", True))
+        event_auto = bool((settings.get("event_channels") or {}).get("auto_start", True))
         with self._lock:
             for key in list(self._workers):
                 worker = self._workers[key]
@@ -1051,6 +1060,8 @@ class Streamer:
             if worker.mode == "tropics" and tropical_auto and self._tropical_activation(worker, settings):
                 should_run = True
                 worker.note_viewer_activity()
+            if worker.mode.startswith("event_") and event_auto and self._event_activation(worker, settings):
+                should_run = True; worker.note_viewer_activity()
             if should_run and not worker.thread_active():
                 worker.start()
 
@@ -1092,6 +1103,12 @@ class Streamer:
         except Exception: alerts=[]
         return bool(self.tropical_manager.activation_status(location,alerts).get("active"))
 
+    def _event_activation(self, worker: ChannelWorker, settings: dict[str, Any]) -> bool:
+        if not self.event_manager or not worker.mode.startswith("event_"): return False
+        from app.network import region_for_location
+        region=region_for_location(settings,worker.location_id)
+        return bool(region and self.event_manager.evaluate(str(region.get("id")),worker.mode.removeprefix("event_")).get("should_run"))
+
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
@@ -1103,6 +1120,7 @@ class Streamer:
                 idle_timeout = max(15, int(channels.get("idle_timeout_seconds", 90)))
                 severe_auto = bool(channels.get("severe_auto_start", True))
                 tropical_auto = bool((settings.get("tropical") or {}).get("auto_start", True))
+                event_auto = bool((settings.get("event_channels") or {}).get("auto_start", True))
                 now = time.time()
                 with self._lock:
                     workers = list(self._workers.values())
@@ -1112,17 +1130,19 @@ class Streamer:
                     running = worker.thread_active() or bool(worker._process and worker._process.poll() is None)
                     severe_active = worker.mode == "severe" and severe_auto and self.renderer.takeover_alert_for(worker.location_id) is not None
                     tropical_active = worker.mode == "tropics" and tropical_auto and self._tropical_activation(worker, settings)
+                    event_active = worker.mode.startswith("event_") and event_auto and self._event_activation(worker, settings)
                     if severe_active:
                         # Keep the channel alive during the alert and start the normal
                         # idle grace period when the alert finally clears.
                         worker.note_viewer_activity()
                     if tropical_active:
                         worker.note_viewer_activity()
+                    if event_active: worker.note_viewer_activity()
 
                     if lifecycle == "always_on" and not running:
                         worker.start()
                         running = True
-                    elif lifecycle == "on_demand" and running and not severe_active and not tropical_active:
+                    elif lifecycle == "on_demand" and running and not severe_active and not tropical_active and not event_active:
                         # A manually/scheduled Local on the 8s block is active
                         # programming, even if no player has requested a segment in
                         # the last few seconds. Never idle-stop it mid-narration.

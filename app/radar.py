@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import copy
 import math
 import os
 import threading
@@ -65,12 +66,14 @@ class RadarManager:
         self._lock = threading.RLock()
         self._frames: dict[str, list[dict[str, Any]]] = {name: [] for name in VIEW_NAMES}
         self._basemaps: dict[str, Image.Image | None] = {name: None for name in VIEW_NAMES}
+        self._location_frames: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._location_basemaps: dict[str, dict[str, Image.Image | None]] = {}
         self._last_update: float | None = None
         self._last_error: str | None = None
         self._view_errors: dict[str, str | None] = {name: None for name in VIEW_NAMES}
         self._resized_frame_cache: dict[tuple[str, int, int, int], Image.Image] = {}
         self._resized_map_cache: dict[tuple[str, int, int, int], Image.Image] = {}
-        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.2.6"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
+        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.3.0"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
         CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
@@ -89,10 +92,10 @@ class RadarManager:
     def request_refresh(self) -> None:
         self._wake.set()
 
-    def snapshot(self, view: str = "local", copy_images: bool = True) -> dict[str, Any]:
+    def snapshot(self, view: str = "local", copy_images: bool = True, location_id: str | None = None) -> dict[str, Any]:
         view = view if view in VIEW_NAMES else "local"
         with self._lock:
-            frames = self._frames.get(view, [])
+            frames = (self._location_frames.get(str(location_id)) or {}).get(view, []) if location_id else self._frames.get(view, [])
             return {
                 "view": view,
                 "frames": [{"time": f["time"], "image": f["image"].copy() if copy_images else f["image"]} for f in frames],
@@ -100,15 +103,15 @@ class RadarManager:
                 "last_error": self._view_errors.get(view) or self._last_error,
             }
 
-    def map_snapshot(self, view: str = "regional", copy_image: bool = True) -> Image.Image | None:
+    def map_snapshot(self, view: str = "regional", copy_image: bool = True, location_id: str | None = None) -> Image.Image | None:
         view = view if view in VIEW_NAMES else "regional"
         with self._lock:
-            image = self._basemaps.get(view)
+            image = (self._location_basemaps.get(str(location_id)) or {}).get(view) if location_id else self._basemaps.get(view)
             return image.copy() if image is not None and copy_image else image
 
     def resized_frame(self, view: str, frame: dict[str, Any], width: int, height: int) -> Image.Image:
         """Return a read-only target-size radar frame shared by active channels."""
-        key = (view if view in VIEW_NAMES else "local", int(frame.get("time") or 0), int(width), int(height))
+        key = (view if view in VIEW_NAMES else "local", id(frame.get("image")), int(width), int(height))
         with self._lock:
             cached = self._resized_frame_cache.get(key)
         if cached is not None:
@@ -120,10 +123,10 @@ class RadarManager:
                 self._resized_frame_cache.pop(next(iter(self._resized_frame_cache)))
             return existing
 
-    def resized_map(self, view: str, width: int, height: int) -> Image.Image | None:
+    def resized_map(self, view: str, width: int, height: int, location_id: str | None = None) -> Image.Image | None:
         view = view if view in VIEW_NAMES else "regional"
         with self._lock:
-            source = self._basemaps.get(view)
+            source = (self._location_basemaps.get(str(location_id)) or {}).get(view) if location_id else self._basemaps.get(view)
             if source is None:
                 return None
             key = (view, id(source), int(width), int(height))
@@ -156,7 +159,17 @@ class RadarManager:
             maps = settings.get("maps", {})
             if radar.get("enabled", True):
                 try:
-                    self._refresh(settings)
+                    # Each region's primary location receives its own centered
+                    # basemap/radar loop; the original primary remains the legacy default.
+                    from app.network import normalized_regions
+                    location_ids=[]
+                    for region in normalized_regions(settings):
+                        lid=str(region.get("primary_location_id") or "")
+                        if lid and lid not in location_ids: location_ids.append(lid)
+                    if not location_ids and settings.get("primary_location_id"): location_ids=[str(settings["primary_location_id"])]
+                    for lid in location_ids:
+                        scoped=copy.deepcopy(settings); scoped["primary_location_id"]=lid; scoped["_radar_default_primary"]=str(settings.get("primary_location_id") or "")
+                        self._refresh(scoped)
                     with self._lock:
                         self._last_error = None
                 except Exception as exc:
@@ -198,13 +211,13 @@ class RadarManager:
         default_zoom = {"local": 7, "regional": 6, "wide": 5}[view]
         zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.6 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.0 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
         client = self._client
         client.headers.update(headers)
         with nullcontext(client) as client:
             base = self._build_basemap(client, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
-            if radar.get("show_boundaries", True):
+            if radar.get("show_boundaries", True) and ((((maps.get("engine2") or {}).get("layers") or {}).get("boundaries",True))):
                 boundaries = self._build_boundary_overlay(
                     client, loc, view, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height
                 )
@@ -212,7 +225,8 @@ class RadarManager:
                     base.alpha_composite(boundaries)
             map_rgb = base.convert("RGB")
             with self._lock:
-                self._basemaps[view] = map_rgb
+                lid=str(loc.get("id")); self._location_basemaps.setdefault(lid,{name:None for name in VIEW_NAMES})[view]=map_rgb
+                if lid==str(settings.get("_radar_default_primary") or settings.get("primary_location_id")): self._basemaps[view] = map_rgb
                 self._last_update = time.time()
             self._save_basemap(loc, view, zoom, map_rgb)
 
@@ -228,7 +242,7 @@ class RadarManager:
         radar = settings.get("radar", {})
         frame_count = max(3, min(12, int(radar.get("frame_count", 8))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.6 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.0 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
 
         client = self._client
@@ -252,7 +266,7 @@ class RadarManager:
                 try:
                     base = self._build_basemap(client, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
                     boundaries = None
-                    if radar.get("show_boundaries", True):
+                    if radar.get("show_boundaries", True) and (((((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {}).get("boundaries",True))):
                         boundaries = self._build_boundary_overlay(
                             client, loc, view, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height
                         )
@@ -261,7 +275,8 @@ class RadarManager:
                         map_base.alpha_composite(boundaries)
                     map_rgb = map_base.convert("RGB")
                     with self._lock:
-                        self._basemaps[view] = map_rgb
+                        lid=str(loc.get("id")); self._location_basemaps.setdefault(lid,{name:None for name in VIEW_NAMES})[view]=map_rgb
+                        if lid==str(settings.get("_radar_default_primary") or settings.get("primary_location_id")): self._basemaps[view] = map_rgb
                     self._save_basemap(loc, view, zoom, map_rgb)
                     composed: list[dict[str, Any]] = []
                     for frame in selected:
@@ -282,7 +297,8 @@ class RadarManager:
                         self._save_composite(loc, view, zoom, frame["time"], image)
 
                     with self._lock:
-                        self._frames[view] = composed
+                        lid=str(loc.get("id")); self._location_frames.setdefault(lid,{name:[] for name in VIEW_NAMES})[view]=composed
+                        if lid==str(settings.get("_radar_default_primary") or settings.get("primary_location_id")): self._frames[view] = composed
                     built_any = built_any or bool(composed)
                     self._prune_cache(loc, view, zoom, keep=24)
                 except Exception as exc:

@@ -27,14 +27,14 @@ class RevisionedSettingsTests(unittest.TestCase):
                 self.assertGreater(new_revision, revision)
                 self.assertEqual(changed["station_name"], "Revision Test")
 
-    def test_v15_migrates_tropical_and_hardware_defaults_to_schema_17(self) -> None:
+    def test_v15_migrates_tropical_hardware_and_network_defaults_to_schema_18(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             settings_path = root / "settings.json"
             settings_path.write_text(json.dumps({"version": 15, "station_name": "Existing Station", "notifications": {"events": ["severe", "source"]}}), encoding="utf-8")
             with patch("app.config.CONFIG_DIR", root), patch("app.config.SETTINGS_PATH", settings_path):
                 settings = ConfigStore().get()
-            self.assertEqual(settings["version"], 17)
+            self.assertEqual(settings["version"], 18)
             self.assertEqual(settings["station_name"], "Existing Station")
             self.assertFalse(settings["notifications"]["enabled"])
             self.assertEqual(settings["notifications"]["events"], ["severe", "source"])
@@ -42,15 +42,17 @@ class RevisionedSettingsTests(unittest.TestCase):
             self.assertEqual(settings["tropical"]["activation_radius_miles"], 750)
             self.assertTrue(settings["channels"]["tropics_enabled"])
             self.assertEqual(settings["video"]["encoder_device"], "auto")
+            self.assertTrue(settings["event_channels"]["enabled"])
+            self.assertTrue(settings["maps"]["engine2"]["enabled"])
 
-    def test_v16_adds_auto_encoder_device_for_schema_17(self) -> None:
+    def test_v16_adds_auto_encoder_device_for_schema_18(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             settings_path = root / "settings.json"
             settings_path.write_text(json.dumps({"version": 16, "video": {"encoder": "qsv"}}), encoding="utf-8")
             with patch("app.config.CONFIG_DIR", root), patch("app.config.SETTINGS_PATH", settings_path):
                 settings = ConfigStore().get()
-            self.assertEqual(settings["version"], 17)
+            self.assertEqual(settings["version"], 18)
             self.assertEqual(settings["video"]["encoder"], "qsv")
             self.assertEqual(settings["video"]["encoder_device"], "auto")
 

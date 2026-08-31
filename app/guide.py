@@ -5,6 +5,9 @@ from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.events import EVENT_TYPES
+from app.network import normalized_regions
+
 
 def _xmltv_time(value: dt.datetime) -> str:
     return value.strftime("%Y%m%d%H%M%S %z")
@@ -53,28 +56,42 @@ def _local_events(settings: dict[str, Any], location: dict[str, Any], severe: bo
     return events
 
 
-def channel_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
-    cfg=settings.get("channels") or {}; locations=list(settings.get("locations") or []); primary_id=settings.get("primary_location_id"); raw=[]
-    if cfg.get("per_zip_enabled",True):
-        for loc in locations[:max(1,min(24,int(cfg.get("max_zip_channels",12))))]:
+def channel_specs(settings: dict[str, Any], include_disabled: bool = False) -> list[dict[str, Any]]:
+    cfg=settings.get("channels") or {}; locations=list(settings.get("locations") or []); by_id={str(x.get("id")):x for x in locations}; raw=[]
+    regions=normalized_regions(settings); multi=len(regions)>1; remaining=max(1,min(24,int(cfg.get("max_zip_channels",12))))
+    event_cfg=settings.get("event_channels") or {}
+    for region_index, region in enumerate(regions):
+        prefix=f"{region['id']}-" if multi else ""; id_prefix=f"{region['id']}." if multi else ""
+        callsign=region.get("callsign") or settings.get("station_callsign") or "RWN"
+        for location_id in region.get("location_ids",[]):
+            if remaining <= 0: break
+            loc=by_id.get(str(location_id))
+            if not loc: continue
             postal=str(loc.get("postal_code") or loc.get("id") or "local")
-            raw.append({"id":f"rwn.zip.{postal}","key":f"zip-{postal}","name":f"RWN Local - {loc.get('name') or postal}","mode":"local","location":loc})
-    primary=next((x for x in locations if x.get("id")==primary_id),None)
-    if primary and cfg.get("radar_enabled",True): raw.append({"id":"rwn.radar","key":"radar","name":"RWN Radar","mode":"radar","location":primary})
-    if primary and cfg.get("severe_enabled",True): raw.append({"id":"rwn.severe","key":"severe","name":"RWN Severe Weather","mode":"severe","location":primary})
-    if primary and cfg.get("tropics_enabled",True): raw.append({"id":"rwn.tropics","key":"tropics","name":"RWN Tropics Watch","mode":"tropics","location":primary})
+            raw.append({"id":f"rwn.{id_prefix}zip.{postal}","key":f"{prefix}zip-{postal}","name":f"{callsign} Local - {loc.get('name') or postal}","mode":"local","location":loc,"region":region,"master_enabled":bool(cfg.get("per_zip_enabled",True))})
+            remaining-=1
+        primary=by_id.get(str(region.get("primary_location_id")))
+        if not primary: continue
+        raw.append({"id":f"rwn.{id_prefix}radar","key":f"{prefix}radar","name":f"{callsign} Radar — {region.get('name')}","mode":"radar","location":primary,"region":region,"master_enabled":bool(cfg.get("radar_enabled",True))})
+        raw.append({"id":f"rwn.{id_prefix}severe","key":f"{prefix}severe","name":f"{callsign} Severe Weather — {region.get('name')}","mode":"severe","location":primary,"region":region,"master_enabled":bool(cfg.get("severe_enabled",True))})
+        raw.append({"id":f"rwn.{id_prefix}tropics","key":f"{prefix}tropics","name":f"{callsign} Tropics Watch — {region.get('name')}","mode":"tropics","location":primary,"region":region,"master_enabled":bool(cfg.get("tropics_enabled",True))})
+        for event_type, definition in EVENT_TYPES.items():
+            raw.append({"id":f"rwn.{id_prefix}event.{event_type}","key":f"{prefix}event-{event_type}","name":f"{callsign} {definition['name']} — {region.get('name')}","mode":f"event_{event_type}","event_type":event_type,"location":primary,"region":region,"master_enabled":bool(event_cfg.get("enabled",True) and (event_cfg.get("types") or {}).get(event_type,True))})
 
     lineup = cfg.get("lineup") if isinstance(cfg.get("lineup"), list) else []
     meta = {str(x.get("key")): x for x in lineup if isinstance(x, dict) and x.get("key")}
     specs=[]
     for idx,spec in enumerate(raw):
         row=meta.get(spec["key"], {})
-        if row and not row.get("enabled", True):
+        enabled=bool(spec.get("master_enabled",True) and row.get("enabled", True))
+        if not include_disabled and not enabled:
             continue
         spec=dict(spec)
+        spec["enabled"] = enabled
         spec["name"] = str(row.get("name") or spec["name"])
         spec["number"] = int(row.get("number") or (201+idx))
         spec["override"] = (cfg.get("overrides") or {}).get(spec["key"], {}) if isinstance(cfg.get("overrides"), dict) else {}
+        spec["branding_profile"] = spec["override"].get("branding_profile") or (spec.get("region") or {}).get("branding_profile") or "default"
         specs.append(spec)
     specs.sort(key=lambda x:(int(x.get("number") or 9999), x["key"]))
     return specs
@@ -82,7 +99,7 @@ def channel_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
 
 def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] | None = None, hours: int = 24, tropical_status: dict[str,Any] | None = None) -> str:
     severe_by_location=severe_by_location or {}; tropical_status=tropical_status or {}; specs=channel_specs(settings)
-    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.2.6">']
+    lines=['<?xml version="1.0" encoding="UTF-8"?>','<tv generator-info-name="WeatherStream 0.3.0">']
     for spec in specs:
         lines += [f'  <channel id="{escape(spec["id"])}">',f'    <display-name>{escape(spec["name"])}</display-name>','  </channel>']
     for spec in specs:
@@ -102,7 +119,7 @@ def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] 
                 title="RWN Severe Weather Coverage" if severe and cursor<=now<b else "RWN Severe Weather Center"
                 desc="Continuous warning details, alert radar and local severe-weather coverage." if "Coverage" in title else "SPC outlooks, storm potential, radar and severe-weather readiness."
                 events.append((cursor,b,title,desc)); cursor=b
-        else:
+        elif spec["mode"]=="tropics":
             systems=tropical_status.get("systems") or []; names=", ".join(str(x.get("name") or "System") for x in systems[:3])
             events=[]; cursor=start
             while cursor<end:
@@ -110,6 +127,11 @@ def generate_xmltv(settings: dict[str, Any], severe_by_location: dict[str,bool] 
                 title=f"RWN Tropics Watch — {names}" if names else "RWN Tropics Watch — Atlantic & Gulf Update"
                 desc="Official NHC system status, forecast tracks, Gulf proximity, and local tropical alerts." if systems else "Atlantic hurricane-season monitoring and the latest official NHC Tropical Weather Outlook."
                 events.append((cursor,b,title,desc)); cursor=b
+        else:
+            event_type=str(spec.get("event_type") or spec["mode"].removeprefix("event_")); label=(EVENT_TYPES.get(event_type) or {}).get("name","Weather Event")
+            events=[]; cursor=start
+            while cursor<end:
+                b=min(end,cursor+dt.timedelta(hours=1)); events.append((cursor,b,f"{spec['name']}",f"Automatic {label.lower()} coverage with official alerts, forecasts, and regional maps.")); cursor=b
         for a,b,title,desc in events:
             lines += [f'  <programme start="{_xmltv_time(a)}" stop="{_xmltv_time(b)}" channel="{escape(spec["id"])}">',f'    <title>{escape(title)}</title>',f'    <desc>{escape(desc)}</desc>','    <category>Weather</category>','  </programme>']
     lines.append('</tv>'); return "\n".join(lines)+"\n"

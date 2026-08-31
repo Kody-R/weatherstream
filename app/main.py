@@ -20,7 +20,11 @@ from PIL import Image
 from app.cache import CacheManager
 from app.config import CONFIG_DIR, ConfigStore
 from app.guide import channel_specs, generate_xmltv
+from app.events import WeatherEventManager
 from app.history import HistoryStore
+from app.imagery import ImageryManager
+from app.network import normalized_regions
+from app.studio import AVAILABLE_SLIDES
 from app.places import PlaceManager
 from app.radar import RadarManager
 from app.renderer import BUILTIN_RWN_LOGO, WeatherRenderer
@@ -37,7 +41,8 @@ from app.security import SlidingWindowLimiter, authentication_enabled, client_ad
 BASE=Path(__file__).resolve().parent
 config_store=ConfigStore(); history_store=HistoryStore(); cache_manager=CacheManager(config_store)
 weather_manager=WeatherManager(config_store,history_store); place_manager=PlaceManager(config_store); radar_manager=RadarManager(config_store); spc_manager=SPCManager(config_store); tropical_manager=TropicalManager(config_store)
-renderer=WeatherRenderer(config_store,weather_manager,radar_manager,place_manager,history_store,spc_manager,tropical_manager); tts_manager=TTSManager(config_store); streamer=Streamer(config_store,renderer,tts_manager,tropical_manager)
+imagery_manager=ImageryManager(config_store); event_manager=WeatherEventManager(config_store,weather_manager)
+renderer=WeatherRenderer(config_store,weather_manager,radar_manager,place_manager,history_store,spc_manager,tropical_manager,imagery_manager,event_manager); tts_manager=TTSManager(config_store); streamer=Streamer(config_store,renderer,tts_manager,tropical_manager,event_manager)
 notification_manager=NotificationManager(config_store)
 _service_ready = False
 _rate_limiter = SlidingWindowLimiter()
@@ -48,17 +53,17 @@ _status_cached: dict | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _service_ready
-    notification_manager.start(); weather_manager.start(); place_manager.start(); radar_manager.start(); spc_manager.start(); tropical_manager.start(); cache_manager.start(); streamer.start()
+    notification_manager.start(); weather_manager.start(); place_manager.start(); radar_manager.start(); spc_manager.start(); tropical_manager.start(); imagery_manager.start(); cache_manager.start(); streamer.start()
     _service_ready = True
-    observability.event("lifecycle", "WeatherStream service started", version="0.2.6")
+    observability.event("lifecycle", "WeatherStream service started", version="0.3.0")
     try:
         yield
     finally:
         _service_ready = False
         observability.event("lifecycle", "WeatherStream service stopping")
-        notification_manager.stop(); streamer.stop(); tts_manager.stop(); cache_manager.stop(); tropical_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
+        notification_manager.stop(); streamer.stop(); tts_manager.stop(); cache_manager.stop(); imagery_manager.stop(); tropical_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
 
-app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.2.6",lifespan=lifespan)
+app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.3.0",lifespan=lifespan)
 templates=Jinja2Templates(directory=str(BASE/"templates")); app.mount("/static",StaticFiles(directory=str(BASE/"static")),name="static")
 LIVE_DIR.mkdir(parents=True,exist_ok=True)
 
@@ -124,6 +129,7 @@ class SettingsRequest(BaseModel):
     weather_refresh_seconds:int|None=None; alert_refresh_seconds:int|None=None; nws_user_agent:str|None=None
     music:dict|None=None; radar:dict|None=None; alerts:dict|None=None; presentation:dict|None=None; slides:dict|None=None; branding:dict|None=None; maps:dict|None=None
     storm_guidance:dict|None=None; spc:dict|None=None; tropical:dict|None=None; history:dict|None=None; smart_programming:dict|None=None; dayparts:dict|None=None; cache:dict|None=None; channels:dict|None=None; video:dict|None=None; performance:dict|None=None; custom_profiles:dict|None=None; tts:dict|None=None; notifications:dict|None=None
+    regions:dict|None=None; branding_profiles:dict|None=None; event_channels:dict|None=None; studio:dict|None=None
 class TtsTestRequest(BaseModel):
     text:str|None=None; voice:str|None=None; speed:float|None=None; volume:float|None=None
 class TtsVoiceRequest(BaseModel):
@@ -149,13 +155,15 @@ def admin(request:Request): return templates.TemplateResponse("admin.html",{"req
 def admin_settings(request:Request): return templates.TemplateResponse("settings.html",{"request":request})
 @app.get("/admin/channels",response_class=HTMLResponse)
 def admin_channels(request:Request): return templates.TemplateResponse("channels.html",{"request":request})
+@app.get("/admin/studio",response_class=HTMLResponse)
+def admin_studio(request:Request): return templates.TemplateResponse("studio.html",{"request":request})
 @app.get("/api/settings")
 def api_settings(): return config_store.get()
 
 @app.get("/api/setup/status")
 def api_setup_status():
     settings=config_store.get(); locations=settings.get("locations") or []
-    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.2.6"}
+    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.3.0"}
 
 @app.post("/api/setup/complete")
 def api_setup_complete(payload:SetupRequest):
@@ -181,11 +189,11 @@ def api_update_settings(payload:SettingsRequest):
     changes=payload.model_dump(exclude_none=True)
     updated=config_store.update_general(changes)
     if set(changes) & {"weather_refresh_seconds", "alert_refresh_seconds", "nws_user_agent", "smart_programming", "dayparts"}: weather_manager.request_refresh()
-    if set(changes) & {"maps"}: place_manager.request_refresh()
+    if set(changes) & {"maps"}: place_manager.request_refresh(); imagery_manager.request_refresh()
     if set(changes) & {"radar", "maps"}: radar_manager.request_refresh()
     if set(changes) & {"spc"}: spc_manager.request_refresh()
     if set(changes) & {"tropical"}: tropical_manager.request_refresh()
-    if "channels" in changes: streamer.request_reconfigure()
+    if set(changes) & {"channels", "regions", "event_channels", "branding_profiles", "studio"}: streamer.request_reconfigure()
     # Encoder/audio/performance changes need a worker restart. Presentation, station,
     # slide timing and theme settings hot-reload from ConfigStore in the renderer.
     if set(changes) & {"video", "music", "performance", "tts"}: streamer.request_restart(reason="settings change")
@@ -212,7 +220,7 @@ def api_set_primary(location_id:str):
     weather_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); streamer.request_reconfigure(); return {"ok":True}
 
 @app.post("/api/refresh")
-def api_refresh(): weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); tropical_manager.request_refresh(); observability.event("refresh", "Manual data refresh requested"); return {"ok":True}
+def api_refresh(): weather_manager.request_refresh(); place_manager.request_refresh(); radar_manager.request_refresh(); spc_manager.request_refresh(); tropical_manager.request_refresh(); imagery_manager.request_refresh(); observability.event("refresh", "Manual data refresh requested"); return {"ok":True}
 @app.post("/api/stream/restart")
 def api_stream_restart(): streamer.request_restart(reason="manual all-channel restart"); observability.event("stream", "All active channels restart requested"); return {"ok":True}
 @app.post("/api/cache/clean")
@@ -236,21 +244,38 @@ def api_channels(request:Request): return {"channels":_channel_payload(request),
 
 @app.get("/api/channel-catalog")
 def api_channel_catalog():
-    settings=config_store.get(); cfg=settings.get("channels") or {}; locations=list(settings.get("locations") or []); primary_id=settings.get("primary_location_id")
-    raw=[]
-    for loc in locations[:max(1,min(24,int(cfg.get("max_zip_channels",12))))]:
-        postal=str(loc.get("postal_code") or loc.get("id") or "local")
-        raw.append({"key":f"zip-{postal}","name":f"RWN Local - {loc.get('name') or postal}","mode":"local","master_enabled":bool(cfg.get("per_zip_enabled",True))})
-    if primary_id:
-        raw.append({"key":"radar","name":"RWN Radar","mode":"radar","master_enabled":bool(cfg.get("radar_enabled",True))})
-        raw.append({"key":"severe","name":"RWN Severe Weather","mode":"severe","master_enabled":bool(cfg.get("severe_enabled",True))})
-    lineup=cfg.get("lineup") if isinstance(cfg.get("lineup"),list) else []; meta={x.get("key"):x for x in lineup if isinstance(x,dict) and x.get("key")}; overrides=cfg.get("overrides") if isinstance(cfg.get("overrides"),dict) else {}; status=(streamer.status().get("channels") or {})
-    out=[]
-    for idx,item in enumerate(raw):
-        row=meta.get(item["key"],{}); enabled=bool(item["master_enabled"] and row.get("enabled",True))
-        out.append({**item,"enabled":enabled,"number":int(row.get("number") or (201+idx)),"name":str(row.get("name") or item["name"]),"override":dict(overrides.get(item["key"]) or {}),"status":status.get(item["key"])})
-    out.sort(key=lambda x:(x["number"],x["key"]))
-    return {"channels":out}
+    settings=config_store.get(); status=(streamer.status().get("channels") or {}); out=[]
+    for item in channel_specs(settings,include_disabled=True):
+        region=item.get("region") or {}; loc=item.get("location") or {}
+        out.append({"key":item["key"],"name":item["name"],"mode":item["mode"],"enabled":item["enabled"],"master_enabled":item.get("master_enabled",True),"number":item["number"],"override":item.get("override") or {},"region_id":region.get("id"),"region_name":region.get("name"),"location_id":loc.get("id"),"branding_profile":item.get("branding_profile"),"status":status.get(item["key"])})
+    return {"channels":out,"branding_profiles":settings.get("branding_profiles") or {}}
+
+@app.get("/api/sources")
+def api_sources(): return {"sources":api_status().get("sources") or {}}
+
+@app.post("/api/sources/{source}/refresh")
+def api_source_refresh(source:str):
+    actions={
+        "weather":weather_manager.request_refresh,"open_meteo":weather_manager.request_refresh,"nws_forecast":weather_manager.request_refresh,
+        "alerts":weather_manager.request_refresh,"nws_alerts":weather_manager.request_refresh,"guidance":weather_manager.request_refresh,
+        "storm_guidance":weather_manager.request_refresh,"weather_history":weather_manager.request_refresh,
+        "radar":radar_manager.request_refresh,"geonames":place_manager.request_refresh,"spc":spc_manager.request_refresh,
+        "nhc_tropical":tropical_manager.request_refresh,"satellite":imagery_manager.request_refresh,"lightning":imagery_manager.request_refresh,
+    }
+    action=actions.get(source)
+    if not action: raise HTTPException(status_code=404,detail="Unknown data source.")
+    action(); observability.event("refresh","Individual source refresh requested",source=source); return {"ok":True,"source":source}
+
+@app.get("/api/studio")
+def api_studio():
+    settings=config_store.get(); return {"studio":settings.get("studio") or {},"slides":AVAILABLE_SLIDES,"regions":normalized_regions(settings),"channel_modes":["local","radar","severe","tropics","event_tornado","event_flood","event_winter","event_wildfire","event_heat"]}
+
+@app.post("/api/studio/publish")
+async def api_studio_publish(request:Request):
+    body=await request.json(); studio=body.get("studio") if isinstance(body,dict) else None
+    if not isinstance(studio,dict): raise HTTPException(status_code=400,detail="Studio payload must contain an object.")
+    studio["published_at"]=dt.datetime.now(dt.timezone.utc).isoformat(); updated=config_store.update_general({"studio":studio}); streamer.request_reconfigure()
+    return {"ok":True,"studio":updated.get("studio")}
 
 @app.get("/api/status")
 def api_status():
@@ -268,8 +293,10 @@ def api_status():
     primary_alerts=(snapshot.get("alerts_by_location") or {}).get(pid) or []
     tropical_status=tropical_manager.status(primary_location,primary_alerts)
     sources["nhc_tropical"]={"last_success":tropical_status.get("last_update") if not tropical_status.get("last_error") else None,"last_error":tropical_status.get("last_error")}
+    imagery_status=imagery_manager.status()
+    for product,row in (imagery_status.get("products") or {}).items(): sources[product]={"last_success":_source_stamp(row.get("last_update")),"last_error":row.get("last_error")}
     result = {
-        "version":"0.2.6","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign")},"security":{"admin_authentication":authentication_enabled()},
+        "version":"0.3.0","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign"),"regions":normalized_regions(settings)},"security":{"admin_authentication":authentication_enabled()},
         "weather":{"last_weather_update":snapshot.get("last_weather_update"),"last_alert_update":snapshot.get("last_alert_update"),"last_error":snapshot.get("last_error"),"locations_loaded":len(snapshot.get("locations",{})),"active_alerts":all_alerts,"location_status":snapshot.get("location_status") or {},"performance":weather_manager.performance_status()},
         "severe_weather":{"takeover_active":renderer.takeover_alert_for(pid) is not None,"top_event":((snapshot.get("alerts_by_location") or {}).get(pid) or [{}])[0].get("event") if ((snapshot.get("alerts_by_location") or {}).get(pid) or []) else None},
         "programming":renderer.programming_status(*renderer._channel_context(pid,"local")),
@@ -280,7 +307,7 @@ def api_status():
             "retro_effects_enabled":((settings.get("presentation") or {}).get("retro_effects") or {}).get("enabled",False),
         },
         "radar":rstat,"places":pstat,"spc":sstat,"history":hstat,"storm_guidance":{"available":bool((snapshot.get("storm_guidance") or {}).get("hourly")),"last_error":(snapshot.get("storm_guidance") or {}).get("error")},
-        "sources":sources,"cache":{**cache_manager.status(),"retention_hours":(settings.get("cache") or {}).get("retention_hours",48)},"render_cache":renderer.context_cache_status(),"stream":stream_status,"tts":tts_manager.status(settings),"tropical":tropical_status,"notifications":notification_manager.status(),"configured_locations":len(settings.get("locations",[])),
+        "sources":sources,"cache":{**cache_manager.status(),"retention_hours":(settings.get("cache") or {}).get("retention_hours",48)},"render_cache":renderer.context_cache_status(),"stream":stream_status,"tts":tts_manager.status(settings),"tropical":tropical_status,"imagery":imagery_status,"event_channels":event_manager.status(),"studio":settings.get("studio") or {},"notifications":notification_manager.status(),"configured_locations":len(settings.get("locations",[])),
     }
     with _status_lock:
         _status_cached = result
@@ -311,6 +338,30 @@ async def upload_branding_logo(request:Request):
 @app.delete("/api/branding/logo")
 def delete_branding_logo(): BRANDING_LOGO.unlink(missing_ok=True); return {"ok":True,"using_builtin":True,"applied":"hot"}
 
+@app.get("/branding/profiles/{profile_id}.png")
+def branding_profile_logo(profile_id:str):
+    if not re.fullmatch(r"[a-z0-9_-]{1,32}",profile_id): raise HTTPException(status_code=404,detail="Profile not found.")
+    path=BRANDING_DIR/"profiles"/f"{profile_id}.png"
+    if not path.exists(): raise HTTPException(status_code=404,detail="Profile logo not found.")
+    return FileResponse(path,media_type="image/png",headers={"Cache-Control":"no-store"})
+
+@app.put("/api/branding/profiles/{profile_id}/logo")
+async def upload_branding_profile_logo(profile_id:str,request:Request):
+    if not re.fullmatch(r"[a-z0-9_-]{1,32}",profile_id): raise HTTPException(status_code=400,detail="Invalid profile id.")
+    if profile_id not in (config_store.get().get("branding_profiles") or {}): raise HTTPException(status_code=404,detail="Branding profile not found.")
+    body=await request.body()
+    if not body or len(body)>5*1024*1024: raise HTTPException(status_code=400,detail="Logo must be an image smaller than 5 MB.")
+    try:
+        probe=Image.open(BytesIO(body)); probe.verify(); image=Image.open(BytesIO(body)).convert("RGBA"); image.thumbnail((1600,1000),Image.Resampling.LANCZOS)
+    except Exception as exc: raise HTTPException(status_code=400,detail=f"Unable to read logo image: {exc}") from exc
+    folder=BRANDING_DIR/"profiles"; folder.mkdir(parents=True,exist_ok=True); path=folder/f"{profile_id}.png"; tmp=folder/f"{profile_id}.tmp.png"; image.save(tmp,"PNG",optimize=True); tmp.replace(path)
+    return {"ok":True,"profile_id":profile_id,"width":image.width,"height":image.height}
+
+@app.delete("/api/branding/profiles/{profile_id}/logo")
+def delete_branding_profile_logo(profile_id:str):
+    if not re.fullmatch(r"[a-z0-9_-]{1,32}",profile_id): raise HTTPException(status_code=400,detail="Invalid profile id.")
+    (BRANDING_DIR/"profiles"/f"{profile_id}.png").unlink(missing_ok=True); return {"ok":True,"profile_id":profile_id}
+
 @app.get("/preview.jpg")
 def preview():
     if PREVIEW_PATH.exists(): return FileResponse(PREVIEW_PATH,media_type="image/jpeg",headers={"Cache-Control":"no-store"})
@@ -322,7 +373,7 @@ def preview_slide(slide_name:str,test_alert:bool=False,location_id:str|None=None
 
 @app.get("/api/rundown/preview")
 def rundown_preview(location_id:str|None=None,channel_mode:str="local"):
-    if channel_mode not in {"local","radar","severe"}: raise HTTPException(status_code=400,detail="Unknown channel mode.")
+    if channel_mode not in {"local","radar","severe","tropics","event_tornado","event_flood","event_winter","event_wildfire","event_heat"}: raise HTTPException(status_code=400,detail="Unknown channel mode.")
     settings,snapshot=renderer._channel_context(location_id=location_id,channel_mode=channel_mode)
     sequence=renderer._sequence(settings,snapshot,time.time())
     return {
@@ -422,8 +473,9 @@ def api_channel_stop(key: str):
 
 @app.get("/playlist.m3u")
 def playlist(request:Request):
-    settings=config_store.get(); base=(settings.get("public_base_url") or str(request.base_url).rstrip("/")).rstrip("/"); logo=f"{base}/branding/logo.png"; lines=["#EXTM3U"]
+    settings=config_store.get(); base=(settings.get("public_base_url") or str(request.base_url).rstrip("/")).rstrip("/"); lines=["#EXTM3U"]
     for spec in channel_specs(settings):
+        profile_id=str(spec.get("branding_profile") or "default"); profile_path=BRANDING_DIR/"profiles"/f"{profile_id}.png"; logo=f"{base}/branding/profiles/{profile_id}.png" if profile_id!="default" and profile_path.exists() else f"{base}/branding/logo.png"
         lines.append(f'#EXTINF:-1 tvg-id="{spec["id"]}" tvg-name="{spec["name"]}" tvg-chno="{spec.get("number","")}" tvg-logo="{logo}" group-title="Roller Weather Network",{spec["name"]}')
         lines.append(f'{base}/live/{spec["key"]}/index.m3u8')
     lines.append(""); return PlainTextResponse("\n".join(lines),media_type="audio/x-mpegurl")
@@ -519,7 +571,7 @@ def api_profile_save(profile_name:str):
 @app.get("/api/backup")
 def api_backup():
     data=create_backup_bytes(config_store.get())
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.6-backup.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.3.0-backup.zip"'})
 
 @app.post("/api/backup/restore")
 async def api_backup_restore(request:Request):
@@ -536,18 +588,18 @@ def api_history_vacuum(): return history_store.vacuum()
 def api_diagnostics():
     settings=config_store.get(); status=api_status(); channels={"channels":_channel_payload(None)}
     data=create_diagnostics_bytes(settings,status,channels,streamer)
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.2.6-diagnostics.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.3.0-diagnostics.zip"'})
 
 @app.get("/health")
-def health(): return {"status":"ok","ready":_service_ready,"version":"0.2.6"}
+def health(): return {"status":"ok","ready":_service_ready,"version":"0.3.0"}
 
 @app.get("/health/live")
-def health_live(): return {"status":"ok","version":"0.2.6"}
+def health_live(): return {"status":"ok","version":"0.3.0"}
 
 @app.get("/health/ready")
 def health_ready():
-    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.2.6"},status_code=503)
-    return {"status":"ok","ready":True,"version":"0.2.6"}
+    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.3.0"},status_code=503)
+    return {"status":"ok","ready":True,"version":"0.3.0"}
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics(): return PlainTextResponse(observability.prometheus(), media_type="text/plain; version=0.0.4")

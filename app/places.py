@@ -42,7 +42,7 @@ class PlaceManager:
         self._cities: list[dict[str, Any]] = []
         self._last_update: float | None = None
         self._last_error: str | None = None
-        self._client = httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.2.6"}, limits=httpx.Limits(max_connections=4, max_keepalive_connections=2))
+        self._client = httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.3.0"}, limits=httpx.Limits(max_connections=4, max_keepalive_connections=2))
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_cache()
 
@@ -132,7 +132,7 @@ class PlaceManager:
 
     def _refresh(self) -> None:
         settings = self.config_store.get()
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.2.6 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.0 (Roller Weather Network local weather display)"
         self._client.headers["User-Agent"] = ua
         resp = self._client.get(GEONAMES_CITIES_URL, timeout=45.0)
         resp.raise_for_status()
