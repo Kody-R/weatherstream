@@ -55,7 +55,7 @@ def fixture():
 
 class V032ForecastGraphicsTests(unittest.TestCase):
     def test_schema_21_defaults_and_studio_palette(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],27)
+        self.assertEqual(DEFAULT_SETTINGS["version"],28)
         self.assertTrue(DEFAULT_SETTINGS["forecast_graphics"]["enabled"])
         for slide in ("day_ahead","humidity_outlook","wind_outlook","rain_accumulation"):
             self.assertIn(slide,AVAILABLE_SLIDES)
@@ -87,7 +87,7 @@ class V032ForecastGraphicsTests(unittest.TestCase):
             settings_path.write_text(json.dumps({"version":19,"presentation":{"sequence":["station_id","current","nws_forecast","hourly","precipitation","seven_day"]},"channels":{"zip_sequence":["current","nws_forecast","hourly","precipitation","seven_day"]}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",settings_path):
                 upgraded=ConfigStore().get()
-            self.assertEqual(upgraded["version"],27)
+            self.assertEqual(upgraded["version"],28)
             self.assertEqual(upgraded["presentation"]["sequence"][:2],["station_id","current"])
             for slide in ("day_ahead","humidity_outlook","wind_outlook","rain_accumulation"):
                 self.assertIn(slide,upgraded["presentation"]["sequence"])

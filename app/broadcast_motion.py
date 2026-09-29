@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# v0.3.9 transition identities.  These names intentionally describe broadcast
+# v0.3.10 transition identities.  These names intentionally describe broadcast
 # language rather than implementation details so the renderer can evolve later.
 DESK_TRANSITIONS = {
     "severe": "angular_wipe",

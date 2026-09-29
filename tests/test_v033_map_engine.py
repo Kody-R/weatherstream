@@ -71,7 +71,7 @@ class _Client:
 
 class V033MapEngineTests(unittest.TestCase):
     def test_schema_21_defaults_and_studio_palette(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],27)
+        self.assertEqual(DEFAULT_SETTINGS["version"],28)
         self.assertTrue(DEFAULT_SETTINGS["maps"]["engine3"]["enabled"])
         for slide in ("spc_map","spc_hazards","surface_map","qpf_map","hazard_map"):
             self.assertIn(slide,AVAILABLE_SLIDES)
@@ -82,7 +82,7 @@ class V033MapEngineTests(unittest.TestCase):
             root=Path(folder); path=root/"settings.json"
             path.write_text(json.dumps({"version":20,"maps":{"engine2":{"enabled":False,"layers":{"radar":False,"alerts":True}}},"channels":{"radar_sequence":["station_id","radar_local","radar_wide"]}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",path): upgraded=ConfigStore().get()
-        self.assertEqual(upgraded["version"],27)
+        self.assertEqual(upgraded["version"],28)
         self.assertFalse(upgraded["maps"]["engine3"]["enabled"])
         self.assertFalse(upgraded["maps"]["engine3"]["layers"]["radar"])
         self.assertEqual(upgraded["channels"]["radar_sequence"][0:2],["station_id","radar_local"])

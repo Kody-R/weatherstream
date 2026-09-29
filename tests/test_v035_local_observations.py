@@ -46,7 +46,7 @@ def fixture():
 
 class V035LocalObservationTests(unittest.TestCase):
     def test_schema_23_defaults_and_slides(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],27)
+        self.assertEqual(DEFAULT_SETTINGS["version"],28)
         self.assertTrue(DEFAULT_SETTINGS["local_data"]["observations"]["enabled"])
         self.assertTrue(DEFAULT_SETTINGS["local_data"]["air_quality"]["enabled"])
         for slide in ("today_so_far","past_24_hours","air_quality","local_rivers","climate_context"):
@@ -58,7 +58,7 @@ class V035LocalObservationTests(unittest.TestCase):
             root=Path(folder); settings_path=root/"settings.json"
             settings_path.write_text(json.dumps({"version":22,"presentation":{"sequence":["station_id","current","hourly","seven_day"]},"channels":{"zip_sequence":["current","hourly","seven_day"]}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",settings_path): upgraded=ConfigStore().get()
-        self.assertEqual(upgraded["version"],27)
+        self.assertEqual(upgraded["version"],28)
         self.assertEqual(upgraded["presentation"]["sequence"][:2],["station_id","current"])
         self.assertIn("today_so_far",upgraded["presentation"]["sequence"])
         self.assertIn("air_quality",upgraded["channels"]["zip_sequence"])

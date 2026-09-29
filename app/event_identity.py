@@ -75,7 +75,7 @@ STORY_TO_IDENTITY = {
 def identity_key(settings: dict[str, Any]) -> str | None:
     """Return the configured dedicated-desk identity for this render context.
 
-    v0.3.9 intentionally themes specialty channels, not ordinary local channels. A
+    v0.3.10 intentionally themes specialty channels, not ordinary local channels. A
     manual local Story Engine classification therefore does not silently recolor the
     user's everyday RWN service. Preview/test callers can set ``_event_identity``.
     """

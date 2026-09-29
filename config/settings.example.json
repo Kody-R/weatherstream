@@ -1,0 +1,717 @@
+{
+  "version": 28,
+  "audio": {
+    "enabled": false,
+    "mode": "off",
+    "provider": "piper",
+    "profile": "broadcast",
+    "speed": 1.0,
+    "profiles": {
+      "broadcast": {
+        "name": "RWN Broadcast",
+        "speed": 1.0,
+        "volume": 0.92,
+        "style": "warm, clear"
+      },
+      "local": {
+        "name": "RWN Local",
+        "speed": 1.03,
+        "volume": 0.92,
+        "style": "friendly"
+      },
+      "news": {
+        "name": "RWN News",
+        "speed": 1.0,
+        "volume": 0.92,
+        "style": "neutral"
+      },
+      "severe": {
+        "name": "RWN Severe",
+        "speed": 0.94,
+        "volume": 0.96,
+        "style": "deliberate"
+      }
+    },
+    "screens": {},
+    "story_intro": true,
+    "severe_alerts": true,
+    "interrupt": true,
+    "immediate_warning": true,
+    "official_templates": true,
+    "sonic_branding": false,
+    "severe_sounder": false,
+    "captions": "off",
+    "max_extension": 3,
+    "cache_hours": 6,
+    "cache_items": 128,
+    "background_mode": "none",
+    "bed_file": "",
+    "ducking": true,
+    "music_db": -24,
+    "duck_db": -34,
+    "voice_gain": 1.0,
+    "alert_gain": 1.0,
+    "stinger_gain": 0.5,
+    "fade_seconds": 0.5,
+    "desk_profiles": {
+      "severe": "severe",
+      "flood": "news",
+      "winter": "news",
+      "heat": "local",
+      "wildfire": "news",
+      "tropical": "news"
+    }
+  },
+  "station_name": "Roller Weather Network",
+  "station_callsign": "RWN",
+  "station_slogan": "Local Weather \u2022 Radar \u2022 Alerts \u2022 24 Hours",
+  "service_area": "",
+  "public_base_url": "",
+  "theme": "local-90s",
+  "primary_location_id": null,
+  "locations": [],
+  "branding": {
+    "logo_enabled": true,
+    "use_builtin_logo": true,
+    "logo_position": "station_id_only",
+    "logo_max_width": 260
+  },
+  "branding_profiles": {
+    "default": {
+      "name": "Network Default",
+      "station_name": "",
+      "callsign": "",
+      "slogan": "",
+      "theme": "",
+      "accent_color": "",
+      "music_folder": ""
+    }
+  },
+  "regions": {
+    "enabled": false,
+    "items": []
+  },
+  "channels": {
+    "per_zip_enabled": true,
+    "radar_enabled": true,
+    "severe_enabled": true,
+    "tropics_enabled": true,
+    "zip_sequence": [
+      "station_id",
+      "current",
+      "story_brief",
+      "today_so_far",
+      "condition_focus",
+      "today",
+      "nws_forecast",
+      "day_ahead",
+      "temperature_trend",
+      "hourly",
+      "humidity_outlook",
+      "wind_outlook",
+      "precipitation",
+      "rain_accumulation",
+      "storm_outlook",
+      "spc_outlook",
+      "seven_day",
+      "past_24_hours",
+      "weather_history",
+      "air_quality",
+      "climate_context",
+      "almanac"
+    ],
+    "radar_sequence": [
+      "station_id",
+      "radar_local",
+      "hazard_map",
+      "map_engine",
+      "spc_map",
+      "spc_hazards",
+      "radar_regional",
+      "surface_map",
+      "qpf_map",
+      "regional_map",
+      "map_satellite",
+      "map_lightning",
+      "radar_wide",
+      "storm_outlook",
+      "spc_outlook"
+    ],
+    "severe_idle_sequence": [
+      "station_id",
+      "current",
+      "spc_outlook",
+      "spc_map",
+      "spc_hazards",
+      "storm_outlook",
+      "hazard_map",
+      "radar_local",
+      "surface_map",
+      "radar_regional"
+    ],
+    "tropics_sequence": [
+      "tropical_update",
+      "tropical_systems",
+      "tropical_track",
+      "tropical_local",
+      "radar_wide"
+    ],
+    "max_zip_channels": 12,
+    "streaming_mode": "on_demand",
+    "idle_timeout_seconds": 90,
+    "startup_timeout_seconds": 12,
+    "severe_auto_start": true,
+    "lineup": [],
+    "overrides": {}
+  },
+  "event_channels": {
+    "enabled": true,
+    "auto_start": true,
+    "cooldown_seconds": 7200,
+    "types": {
+      "tornado": true,
+      "flood": true,
+      "winter": true,
+      "wildfire": true,
+      "heat": true
+    },
+    "sequences": {
+      "tornado": [
+        "event_summary",
+        "alert",
+        "alert_radar",
+        "hazard_map",
+        "spc_map",
+        "spc_hazards",
+        "current",
+        "radar_local",
+        "nws_forecast"
+      ],
+      "flood": [
+        "event_summary",
+        "alert",
+        "qpf_map",
+        "local_rivers",
+        "today_so_far",
+        "current",
+        "nws_forecast",
+        "radar_regional"
+      ],
+      "winter": [
+        "event_summary",
+        "alert",
+        "surface_map",
+        "current",
+        "today_so_far",
+        "nws_forecast",
+        "temperature_trend",
+        "radar_regional"
+      ],
+      "wildfire": [
+        "event_summary",
+        "alert",
+        "current",
+        "air_quality",
+        "nws_forecast",
+        "regional_map"
+      ],
+      "heat": [
+        "event_summary",
+        "alert",
+        "current",
+        "today_so_far",
+        "air_quality",
+        "climate_context",
+        "temperature_trend",
+        "hourly",
+        "nws_forecast"
+      ]
+    }
+  },
+  "event_identity": {
+    "enabled": true,
+    "background_motifs": true,
+    "desk_bug": true,
+    "desks": {
+      "severe": true,
+      "flood": true,
+      "winter": true,
+      "heat": true,
+      "wildfire": true,
+      "tropical": true
+    }
+  },
+  "maps": {
+    "auto_city_labels": true,
+    "city_min_population": 5000,
+    "city_max_labels": 10,
+    "city_radius_miles": 180,
+    "regional_map_enabled": true,
+    "regional_map_view": "regional",
+    "engine2": {
+      "enabled": true,
+      "refresh_seconds": 300,
+      "layers": {
+        "radar": true,
+        "satellite": true,
+        "lightning": true,
+        "alerts": true,
+        "tropical_tracks": true,
+        "city_labels": true,
+        "boundaries": true
+      }
+    },
+    "engine3": {
+      "enabled": true,
+      "refresh_seconds": 300,
+      "layers": {
+        "radar": true,
+        "satellite": true,
+        "lightning": true,
+        "alerts": true,
+        "tropical_tracks": true,
+        "city_labels": true,
+        "boundaries": true,
+        "spc_outlook": true,
+        "spc_probabilities": true,
+        "surface_chart": true,
+        "qpf": true
+      }
+    }
+  },
+  "studio": {
+    "enabled": true,
+    "published_at": null,
+    "sequences": {},
+    "schedules": [],
+    "control_room": {
+      "safe_area": true,
+      "auto_refresh_seconds": 3,
+      "show_thumbnails": true,
+      "show_source_health": true
+    },
+    "bumpers": [
+      {
+        "id": "network-update",
+        "title": "ROLLER WEATHER NETWORK",
+        "subtitle": "LOCAL WEATHER UPDATE",
+        "duration": 6,
+        "accent": "#ffd447"
+      }
+    ]
+  },
+  "storm_guidance": {
+    "enabled": true,
+    "refresh_seconds": 900
+  },
+  "spc": {
+    "enabled": true,
+    "refresh_seconds": 900,
+    "minimum_smart_risk": "MRGL"
+  },
+  "tropical": {
+    "enabled": true,
+    "segment_enabled": true,
+    "auto_start": true,
+    "refresh_seconds": 600,
+    "activation_radius_miles": 750,
+    "gulf_development_threshold": 40,
+    "cooldown_seconds": 21600
+  },
+  "history": {
+    "enabled": true,
+    "retention_days": 90
+  },
+  "local_data": {
+    "observations": {
+      "enabled": true,
+      "use_for_current": true
+    },
+    "air_quality": {
+      "enabled": true,
+      "provider": "open_meteo"
+    },
+    "rivers": {
+      "enabled": true,
+      "radius_miles": 60,
+      "max_gauges": 3,
+      "trend_hours": 6
+    },
+    "climate": {
+      "enabled": true,
+      "ncei_station_id": ""
+    }
+  },
+  "smart_programming": {
+    "enabled": true,
+    "rain_threshold": 20,
+    "storm_threshold": 15,
+    "heat_threshold": 95,
+    "cold_threshold": 32,
+    "wind_threshold": 25,
+    "humid_dewpoint_threshold": 65,
+    "dry_dewpoint_threshold": 35,
+    "smart_story_ordering": true
+  },
+  "story_engine": {
+    "enabled": true,
+    "show_story_brief": true,
+    "include_context": true,
+    "context_ribbon": true,
+    "max_slides": 13,
+    "hold_minutes": 8,
+    "aqi_threshold": 101,
+    "heavy_rain_inches": 1.0,
+    "high_wind_gust": 35
+  },
+  "forecast_graphics": {
+    "enabled": true,
+    "day_ahead_hours": 24,
+    "wind_outlook_enabled": true,
+    "humidity_outlook_enabled": true,
+    "rain_accumulation_enabled": true,
+    "nws_summary_enabled": true
+  },
+  "icon_system": {
+    "enabled": true,
+    "style": "rwn_classic",
+    "animation_enabled": true,
+    "animation_speed": 1.7,
+    "metric_icons": true,
+    "alert_icons": true,
+    "hero_icons": true
+  },
+  "dayparts": {
+    "enabled": true,
+    "morning_start": 5,
+    "daytime_start": 10,
+    "evening_start": 17,
+    "overnight_start": 22,
+    "sequences": {
+      "morning": [
+        "station_id",
+        "current",
+        "story_brief",
+        "today_so_far",
+        "condition_focus",
+        "today",
+        "day_ahead",
+        "temperature_trend",
+        "humidity_outlook",
+        "wind_outlook",
+        "hourly",
+        "radar_local",
+        "regional_map",
+        "seven_day",
+        "past_24_hours",
+        "weather_history",
+        "air_quality",
+        "climate_context",
+        "almanac"
+      ],
+      "daytime": [
+        "station_id",
+        "current",
+        "today_so_far",
+        "condition_focus",
+        "today",
+        "day_ahead",
+        "temperature_trend",
+        "hourly",
+        "humidity_outlook",
+        "wind_outlook",
+        "precipitation",
+        "rain_accumulation",
+        "storm_outlook",
+        "spc_outlook",
+        "radar_local",
+        "nws_forecast",
+        "regional_map",
+        "seven_day",
+        "weather_history"
+      ],
+      "evening": [
+        "station_id",
+        "current",
+        "today_so_far",
+        "condition_focus",
+        "nws_forecast",
+        "day_ahead",
+        "hourly",
+        "humidity_outlook",
+        "wind_outlook",
+        "precipitation",
+        "rain_accumulation",
+        "radar_local",
+        "seven_day",
+        "regional_map",
+        "past_24_hours",
+        "weather_history",
+        "air_quality",
+        "climate_context",
+        "almanac"
+      ],
+      "overnight": [
+        "station_id",
+        "current",
+        "condition_focus",
+        "nws_forecast",
+        "day_ahead",
+        "wind_outlook",
+        "radar_local",
+        "seven_day",
+        "regional_map",
+        "past_24_hours",
+        "weather_history",
+        "air_quality",
+        "climate_context",
+        "almanac"
+      ]
+    }
+  },
+  "cache": {
+    "retention_hours": 48,
+    "auto_cleanup": true
+  },
+  "weather_refresh_seconds": 600,
+  "alert_refresh_seconds": 60,
+  "nws_user_agent": "WeatherStream/0.3.10 (Roller Weather Network local weather display)",
+  "radar": {
+    "enabled": true,
+    "frame_count": 8,
+    "frame_seconds": 0.8,
+    "refresh_seconds": 300,
+    "opacity": 0.82,
+    "contrast": 1.25,
+    "show_boundaries": true,
+    "show_city_markers": true,
+    "show_range_rings": true,
+    "range_rings_miles": [
+      25,
+      50,
+      100
+    ],
+    "sweep_enabled": true,
+    "sweep_seconds": 6.0,
+    "views": {
+      "local": {
+        "enabled": true,
+        "zoom": 7
+      },
+      "regional": {
+        "enabled": true,
+        "zoom": 6
+      },
+      "wide": {
+        "enabled": true,
+        "zoom": 5
+      }
+    }
+  },
+  "alerts": {
+    "show_polygons": true,
+    "takeover_enabled": true,
+    "takeover_min_severity": "Severe",
+    "ticker_takeover": true,
+    "chime_enabled": true,
+    "chime_volume": 0.65,
+    "takeover_sequence": [
+      "alert",
+      "alert_radar",
+      "current",
+      "nws_forecast",
+      "alert_radar"
+    ]
+  },
+  "music": {
+    "enabled": true,
+    "volume": 0.3,
+    "shuffle": true
+  },
+  "tts": {
+    "enabled": false,
+    "provider": "piper",
+    "voice": "en_US-lessac-medium",
+    "auto_download_voice": true,
+    "local_on_8s": true,
+    "severe_alerts": true,
+    "volume": 0.92,
+    "speed": 1.0,
+    "duck_music": true,
+    "cache_items": 64
+  },
+  "video": {
+    "width": 1280,
+    "height": 720,
+    "render_fps": 5,
+    "content_fps": 3,
+    "output_fps": 15,
+    "encoder_preset": "superfast",
+    "bitrate": "2000k",
+    "hls_segment_seconds": 3,
+    "hls_list_size": 10,
+    "preview_interval_seconds": 5,
+    "encoder": "software",
+    "encoder_device": "auto"
+  },
+  "performance": {
+    "mode": "adaptive",
+    "stall_recovery_enabled": true,
+    "stall_seconds": 15,
+    "adaptive_bad_seconds": 18,
+    "adaptive_recover_seconds": 120,
+    "adaptive_disable_retro": true,
+    "adaptive_transition": "cut",
+    "adaptive_content_fps": 2
+  },
+  "custom_profiles": {},
+  "notifications": {
+    "enabled": false,
+    "webhook_url": "",
+    "events": [
+      "severe",
+      "tropical",
+      "event",
+      "source",
+      "stream"
+    ],
+    "minimum_interval_seconds": 30,
+    "allow_private_targets": false
+  },
+  "presentation": {
+    "visual_system": {
+      "enabled": true,
+      "design_width": 1280,
+      "design_height": 720,
+      "footer_mode": "data_ribbon",
+      "show_source_badges": true,
+      "show_freshness": true,
+      "condition_backgrounds": true
+    },
+    "transition": "crossfade",
+    "transition_seconds": 0.75,
+    "broadcast_motion": {
+      "enabled": true,
+      "auto_transitions": true,
+      "desk_transitions": true,
+      "network_style": "clean",
+      "transition_seconds": 0.65,
+      "entry_animation": true,
+      "entry_style": "broadcast",
+      "entry_seconds": 0.45,
+      "emergency_hard_cut": true
+    },
+    "show_station_id": true,
+    "station_id_seconds": 6,
+    "show_slide_labels": true,
+    "background_motion": true,
+    "retro_effects": {
+      "enabled": false,
+      "scanlines": 0.14,
+      "noise": 0.025,
+      "bloom": 0.1,
+      "soft_edges": 0.12,
+      "color_bleed_px": 1,
+      "horizontal_jitter_px": 1
+    },
+    "scheduled_updates": {
+      "enabled": false,
+      "minute_marks": [
+        8,
+        18,
+        28,
+        38,
+        48,
+        58
+      ],
+      "window_seconds": 120,
+      "intro_enabled": true,
+      "phase_lead_seconds": 0.8,
+      "phase_tail_seconds": 1.0,
+      "tts_wait_seconds": 15,
+      "max_phase_seconds": 75,
+      "sequence": [
+        "current",
+        "today",
+        "hourly",
+        "radar_local",
+        "seven_day"
+      ]
+    },
+    "sequence": [
+      "station_id",
+      "current",
+      "story_brief",
+      "today_so_far",
+      "condition_focus",
+      "today",
+      "nws_forecast",
+      "day_ahead",
+      "temperature_trend",
+      "hourly",
+      "humidity_outlook",
+      "wind_outlook",
+      "precipitation",
+      "rain_accumulation",
+      "storm_outlook",
+      "spc_outlook",
+      "radar_local",
+      "seven_day",
+      "regional_map",
+      "regional",
+      "radar_regional",
+      "past_24_hours",
+      "weather_history",
+      "air_quality",
+      "climate_context",
+      "almanac",
+      "radar_wide"
+    ]
+  },
+  "slides": {
+    "station_id": 6,
+    "current": 12,
+    "story_brief": 11,
+    "today": 12,
+    "nws_forecast": 16,
+    "day_ahead": 16,
+    "hourly": 15,
+    "humidity_outlook": 14,
+    "wind_outlook": 14,
+    "precipitation": 12,
+    "rain_accumulation": 14,
+    "temperature_trend": 14,
+    "storm_outlook": 14,
+    "regional_map": 16,
+    "seven_day": 15,
+    "regional": 12,
+    "almanac": 12,
+    "radar": 16,
+    "radar_local": 16,
+    "radar_regional": 16,
+    "radar_wide": 16,
+    "alert": 14,
+    "alert_radar": 18,
+    "condition_focus": 10,
+    "today_so_far": 14,
+    "past_24_hours": 16,
+    "air_quality": 13,
+    "local_rivers": 16,
+    "climate_context": 14,
+    "weather_history": 14,
+    "spc_outlook": 13,
+    "tropical_update": 14,
+    "tropical_systems": 16,
+    "tropical_track": 18,
+    "tropical_local": 14,
+    "event_summary": 12,
+    "map_engine": 18,
+    "map_satellite": 16,
+    "map_lightning": 16,
+    "spc_map": 18,
+    "spc_hazards": 18,
+    "surface_map": 18,
+    "qpf_map": 18,
+    "hazard_map": 18
+  }
+}

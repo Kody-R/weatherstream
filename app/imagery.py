@@ -149,7 +149,7 @@ class ImageryManager:
                     url,
                     headers={
                         "User-Agent": (
-                            "WeatherStream/0.3.9 "
+                            "WeatherStream/0.3.10 "
                             "(Roller Weather Network local weather display)"
                         )
                     },

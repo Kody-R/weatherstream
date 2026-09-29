@@ -150,7 +150,7 @@ def fetch_storm_guidance(location: dict[str, Any], client: httpx.Client | None =
 
 def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.10 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     lat = float(location["latitude"])
@@ -230,7 +230,7 @@ def _convert_obs_value(value: float | None, unit: str, kind: str) -> float | Non
 
 def fetch_nws_observation(location: dict[str, Any], user_agent: str, observation_stations_url: str = "", client: httpx.Client | None = None) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.10 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     owned = client is None
@@ -346,7 +346,7 @@ def merge_observation_into_current(model_current: dict[str, Any], observation: d
 
 def fetch_alerts(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> list[dict[str, Any]]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.10 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     point = f"{float(location['latitude']):.4f},{float(location['longitude']):.4f}"

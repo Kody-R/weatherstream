@@ -164,7 +164,7 @@ class TTSManager:
         proc = subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-i", str(wav_path), "-filter:a", f"volume={gain:.3f}",
+                "-i", str(wav_path), "-filter:a", f"loudnorm=I=-18:TP=-2:LRA=7,volume={gain:.3f},alimiter=limit=0.95:level=false",
                 "-f", "s16le", "-acodec", "pcm_s16le",
                 "-ar", "44100", "-ac", "2", str(tmp),
             ],
@@ -389,7 +389,8 @@ class TTSManager:
             humidity = _round_int(current.get("relative_humidity_2m"))
             wind = _round_int(current.get("wind_speed_10m"))
             gusts = _round_int(current.get("wind_gusts_10m"))
-            direction = _clean_text(current.get("wind_cardinal") or "", 12)
+            from app.speech import WeatherSpeechFormatter
+            direction = WeatherSpeechFormatter.direction(current.get("wind_cardinal"))
             pressure = _num(current.get("surface_pressure"))
             if feels is not None: parts.append(f"Feels like {feels} degrees.")
             if humidity is not None: parts.append(f"Humidity {humidity} percent.")

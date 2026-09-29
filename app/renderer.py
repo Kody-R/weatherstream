@@ -221,13 +221,14 @@ class WeatherRenderer:
         self._context_cache: dict[tuple[str | None, str, int, int, int, int], tuple[dict[str, Any], dict[str, Any]]] = {}
         self._context_hits = 0
         self._context_misses = 0
+        self.audio_durations = {}
         self._story_state: dict[str, dict[str, Any]] = {}
 
     def _theme(self, settings: dict[str, Any]) -> dict[str, str]:
         colors = dict(THEMES.get(settings.get("theme", "local-90s"), THEMES["local-90s"]))
         accent = (settings.get("_branding_profile") or {}).get("accent_color")
         if accent: colors["accent"] = accent; colors["title"] = accent
-        # Dedicated v0.3.9 event desks deliberately override the ordinary station
+        # Dedicated v0.3.10 event desks deliberately override the ordinary station
         # theme only on specialty/event channels. The everyday local service keeps
         # the user's selected RWN theme even when the Story Engine spots a hazard.
         return apply_identity_colors(colors, settings)
@@ -718,6 +719,10 @@ class WeatherRenderer:
 
         if snapshot.get("alerts") and not takeover and not any(name == "alert" for name, _ in seq):
             seq.insert(1 if seq else 0, ("alert", max(3, int(durations.get("alert", 14)))))
+        extras = self.audio_durations.get((settings.get("primary_location_id"), settings.get("_channel_mode", "local")), {})
+        if (settings.get("audio") or {}).get("enabled") and not takeover:
+            extension = float((settings.get("audio") or {}).get("max_extension", 3))
+            seq = [(name, max(seconds, min(seconds + extension, extras.get(name, seconds)))) for name, seconds in seq]
         return seq or [("current", 12)]
 
     def _timeline(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float):
@@ -733,7 +738,7 @@ class WeatherRenderer:
         return seq, 0, seq[0][0], 0.0, 0.0, seq[0][1]
 
     def _paint_event_background(self, img: Image.Image, c: dict[str, str], settings: dict[str, Any], now: float) -> None:
-        """Paint the approved v0.3.9 desk motif without replacing map/data content.
+        """Paint the approved v0.3.10 desk motif without replacing map/data content.
 
         The patterns are intentionally restrained: they establish channel identity
         at a glance while preserving high-contrast broadcast readability.

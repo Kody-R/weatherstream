@@ -42,7 +42,7 @@ def fixture():
 
 class V036StoryEngineTests(unittest.TestCase):
     def test_schema_24_defaults(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],27)
+        self.assertEqual(DEFAULT_SETTINGS["version"],28)
         self.assertTrue(DEFAULT_SETTINGS["story_engine"]["enabled"])
         self.assertIn("story_brief", AVAILABLE_SLIDES)
         self.assertIn("story_brief", DEFAULT_SETTINGS["slides"])
@@ -52,7 +52,7 @@ class V036StoryEngineTests(unittest.TestCase):
             root=Path(folder); settings_path=root/"settings.json"
             settings_path.write_text(json.dumps({"version":23,"presentation":{"sequence":["station_id","current","hourly","seven_day"]},"channels":{"zip_sequence":["current","hourly","seven_day"]}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",settings_path): upgraded=ConfigStore().get()
-        self.assertEqual(upgraded["version"],27)
+        self.assertEqual(upgraded["version"],28)
         self.assertTrue(upgraded["story_engine"]["enabled"])
         core=[x for x in upgraded["presentation"]["sequence"] if x!="story_brief"]
         self.assertEqual(core[:4],["station_id","current","hourly","seven_day"])

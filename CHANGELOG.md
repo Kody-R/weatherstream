@@ -1,3 +1,11 @@
+# v0.3.10 — RWN Voice & Audio
+
+- Added deterministic narration planning, speech formatting, Piper adapter, cache, per-channel audio director, mixer and captions.
+- Added Studio audio health, preview, scoped script edits, regeneration and live voice/bed mute.
+- Preserved Local 8 phase synchronization, severe priority and existing hardware encoder selection.
+- Advanced configuration to schema 28 and active image/version references to v0.3.10.
+- Added 32 tests; all 111 tests pass. See release notes for Windows validation limits.
+
 # Changelog
 
 ## 0.3.9

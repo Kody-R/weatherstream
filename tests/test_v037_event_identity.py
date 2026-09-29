@@ -41,7 +41,7 @@ def fixture():
 
 class V037EventIdentityTests(unittest.TestCase):
     def test_schema_25_defaults(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],27)
+        self.assertEqual(DEFAULT_SETTINGS["version"],28)
         self.assertTrue(DEFAULT_SETTINGS["event_identity"]["enabled"])
         self.assertEqual(set(DEFAULT_SETTINGS["event_identity"]["desks"]),{"severe","flood","winter","heat","wildfire","tropical"})
         self.assertEqual(set(EVENT_IDENTITIES),{"severe","flood","winter","heat","wildfire","tropical"})
@@ -52,7 +52,7 @@ class V037EventIdentityTests(unittest.TestCase):
             root=Path(folder); settings_path=root/"settings.json"
             settings_path.write_text(json.dumps({"version":24,"theme":"cable-gold","event_channels":{"sequences":{"heat":custom}}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",settings_path): upgraded=ConfigStore().get()
-        self.assertEqual(upgraded["version"],27)
+        self.assertEqual(upgraded["version"],28)
         self.assertEqual(upgraded["theme"],"cable-gold")
         self.assertEqual(upgraded["event_channels"]["sequences"]["heat"],custom)
         self.assertTrue(upgraded["event_identity"]["desks"]["heat"])

@@ -1,4 +1,18 @@
-# WeatherStream v0.3.9 — Studio Control Room 2.0
+# WeatherStream v0.3.10 — RWN Voice & Audio
+
+WeatherStream adds a weather-aware automated announcer to its existing Docker/HLS broadcast engine. Template-driven narration follows Weather Story and actual playout, uses local Piper through a replaceable provider, caches audio, prioritizes official warnings, and exposes script previews and controls in Studio. Audio remains optional.
+
+- Schema 28 preserves prior configuration; silent installations stay silent.
+- Five narration modes, four logical voice profiles, and per-screen selection.
+- Bounded background generation, measured durations, up to five seconds of slide extension.
+- Voice, bed, stinger, and alert buses, normalization, ducking, captions, and severe interruption.
+- Browser-only Studio previews, runtime segment edits, health and cache controls.
+
+See [v0.3.10 release notes](V0.3.10_RELEASE_NOTES.md) for setup, architecture, tests, and known validation limits. Docker/CasaOS and actual Piper speech still require on-device acceptance testing.
+
+## Previous release: v0.3.9
+
+### WeatherStream v0.3.9 — Studio Control Room 2.0
 
 WeatherStream is a self-hosted Docker broadcast engine that turns local observations, forecasts, official NWS/NOAA products, radar, alerts, environmental data, branding, audio, and automated programming into HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.9 adds Studio Control Room 2.0: a live production interface for seeing what is actually on air, what is next, why the Weather Story Director made its decisions, how fresh each data source is, and when an operator has temporarily taken control.**
 

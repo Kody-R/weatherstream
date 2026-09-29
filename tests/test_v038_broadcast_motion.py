@@ -26,7 +26,7 @@ def renderer():
 
 class V038BroadcastMotionTests(unittest.TestCase):
     def test_schema_26_defaults(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],27)
+        self.assertEqual(DEFAULT_SETTINGS["version"],28)
         motion=DEFAULT_SETTINGS["presentation"]["broadcast_motion"]
         self.assertTrue(motion["enabled"])
         self.assertTrue(motion["auto_transitions"])
@@ -39,7 +39,7 @@ class V038BroadcastMotionTests(unittest.TestCase):
             settings_path.write_text(json.dumps({"version":25,"presentation":{"transition":"crt_fade","transition_seconds":1.1}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",settings_path):
                 upgraded=ConfigStore().get()
-        self.assertEqual(upgraded["version"],27)
+        self.assertEqual(upgraded["version"],28)
         self.assertEqual(upgraded["presentation"]["transition"],"crt_fade")
         self.assertTrue(upgraded["presentation"]["broadcast_motion"]["enabled"])
 

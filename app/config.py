@@ -8,12 +8,14 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Any
+from app.audio_config import DEFAULT_AUDIO, normalize_audio
 
 CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 27,
+    "version": 28,
+    "audio": copy.deepcopy(DEFAULT_AUDIO),
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -194,7 +196,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.3.10 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -685,14 +687,25 @@ class ConfigStore:
                 pres["broadcast_motion"] = _deep_merge(DEFAULT_SETTINGS["presentation"]["broadcast_motion"], existing)
 
             if previous_version < 27:
-                # v0.3.9 adds Studio Control Room 2.0 preferences without replacing
+                # v0.3.10 adds Studio Control Room 2.0 preferences without replacing
                 # published rundowns. Operator takeovers remain intentionally ephemeral.
                 merged["studio"] = _deep_merge(DEFAULT_SETTINGS["studio"], raw.get("studio") or {})
-                # v0.3.9 operator takeovers are runtime-only; discard any early
+                # v0.3.10 operator takeovers are runtime-only; discard any early
                 # development snapshots that persisted a takeover in settings.
                 merged["studio"].pop("manual_takeovers", None)
 
-            merged["version"] = 27
+            if previous_version < 28:
+                legacy = raw.get("tts") or {}
+                audio = copy.deepcopy(DEFAULT_AUDIO)
+                if legacy.get("enabled"):
+                    audio.update(enabled=True, mode="local_on_8s" if legacy.get("local_on_8s", True) else "severe_only",
+                                 severe_alerts=legacy.get("severe_alerts", True), speed=legacy.get("speed", 1.0))
+                    for profile in audio["profiles"].values():
+                        profile["voice"] = legacy.get("voice", "en_US-lessac-medium")
+                        profile["volume"] = legacy.get("volume", 0.92)
+                audio.update(raw.get("audio") or {})
+                merged["audio"] = normalize_audio(audio)
+            merged["version"] = 28
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -731,7 +744,7 @@ class ConfigStore:
             raise ValueError("settings payload must be an object")
         with self._lock:
             self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
-            self._settings["version"] = 27
+            self._settings["version"] = 28
             self._save_locked()
         return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
 
@@ -742,19 +755,19 @@ class ConfigStore:
             "alert_refresh_seconds", "nws_user_agent", "music", "radar",
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
             "spc", "history", "local_data", "smart_programming", "story_engine", "forecast_graphics", "icon_system", "dayparts", "cache", "channels", "video",
-            "performance", "custom_profiles", "tts", "notifications", "tropical",
+            "performance", "custom_profiles", "audio", "tts", "notifications", "tropical",
             "regions", "branding_profiles", "event_channels", "event_identity", "studio",
         }
         with self._lock:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "local_data", "smart_programming", "story_engine", "forecast_graphics", "icon_system", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications", "tropical", "regions", "branding_profiles", "event_channels", "event_identity", "studio"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "local_data", "smart_programming", "story_engine", "forecast_graphics", "icon_system", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "audio", "tts", "notifications", "tropical", "regions", "branding_profiles", "event_channels", "event_identity", "studio"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 27
+            self._settings["version"] = 28
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -764,6 +777,7 @@ class ConfigStore:
             self._settings["alert_refresh_seconds"] = max(30, int(self._settings["alert_refresh_seconds"]))
             self._settings["music"]["volume"] = _clamp_float(self._settings["music"].get("volume"), 0.0, 1.0, 0.30)
 
+            self._settings["audio"] = normalize_audio(self._settings.get("audio"))
             tts = _deep_merge(DEFAULT_SETTINGS["tts"], self._settings.get("tts") or {})
             tts["enabled"] = bool(tts.get("enabled", False))
             tts["provider"] = "piper"
@@ -1100,7 +1114,7 @@ class ConfigStore:
             control_room["show_source_health"] = bool(control_room.get("show_source_health", True))
             control_room["auto_refresh_seconds"] = _clamp_int(control_room.get("auto_refresh_seconds"), 1, 15, 3)
             studio["control_room"] = control_room
-            # Operator takeovers are intentionally runtime-only in v0.3.9. Never
+            # Operator takeovers are intentionally runtime-only in v0.3.10. Never
             # restore a stale on-air override after a service restart.
             studio.pop("manual_takeovers", None)
             self._settings["studio"] = studio

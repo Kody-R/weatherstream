@@ -44,6 +44,7 @@ config_store=ConfigStore(); history_store=HistoryStore(); cache_manager=CacheMan
 weather_manager=WeatherManager(config_store,history_store); place_manager=PlaceManager(config_store); radar_manager=RadarManager(config_store); spc_manager=SPCManager(config_store); tropical_manager=TropicalManager(config_store)
 imagery_manager=ImageryManager(config_store); event_manager=WeatherEventManager(config_store,weather_manager)
 renderer=WeatherRenderer(config_store,weather_manager,radar_manager,place_manager,history_store,spc_manager,tropical_manager,imagery_manager,event_manager); tts_manager=TTSManager(config_store); streamer=Streamer(config_store,renderer,tts_manager,tropical_manager,event_manager)
+from app.audio_api import audio_router
 notification_manager=NotificationManager(config_store)
 _service_ready = False
 _rate_limiter = SlidingWindowLimiter()
@@ -56,15 +57,15 @@ async def lifespan(app: FastAPI):
     global _service_ready
     notification_manager.start(); weather_manager.start(); place_manager.start(); radar_manager.start(); spc_manager.start(); tropical_manager.start(); imagery_manager.start(); cache_manager.start(); streamer.start()
     _service_ready = True
-    observability.event("lifecycle", "WeatherStream service started", version="0.3.9")
+    observability.event("lifecycle", "WeatherStream service started", version="0.3.10")
     try:
         yield
     finally:
         _service_ready = False
         observability.event("lifecycle", "WeatherStream service stopping")
-        notification_manager.stop(); streamer.stop(); tts_manager.stop(); cache_manager.stop(); imagery_manager.stop(); tropical_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
+        notification_manager.stop(); streamer.stop(); streamer.audio_service.close(); tts_manager.stop(); cache_manager.stop(); imagery_manager.stop(); tropical_manager.stop(); spc_manager.stop(); radar_manager.stop(); place_manager.stop(); weather_manager.stop()
 
-app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.3.9",lifespan=lifespan)
+app=FastAPI(title="WeatherStream / Roller Weather Network",version="0.3.10",lifespan=lifespan)
 templates=Jinja2Templates(directory=str(BASE/"templates")); app.mount("/static",StaticFiles(directory=str(BASE/"static")),name="static")
 LIVE_DIR.mkdir(parents=True,exist_ok=True)
 
@@ -88,6 +89,8 @@ def _admin_protected(path: str, method: str) -> bool:
         return False
     return True
 
+
+app.include_router(audio_router(streamer, config_store))
 
 @app.middleware("http")
 async def security_and_metrics(request: Request, call_next):
@@ -129,7 +132,7 @@ class SettingsRequest(BaseModel):
     station_name:str|None=None; station_callsign:str|None=None; station_slogan:str|None=None; service_area:str|None=None; public_base_url:str|None=None; theme:str|None=None
     weather_refresh_seconds:int|None=None; alert_refresh_seconds:int|None=None; nws_user_agent:str|None=None
     music:dict|None=None; radar:dict|None=None; alerts:dict|None=None; presentation:dict|None=None; slides:dict|None=None; branding:dict|None=None; maps:dict|None=None
-    storm_guidance:dict|None=None; spc:dict|None=None; tropical:dict|None=None; history:dict|None=None; smart_programming:dict|None=None; story_engine:dict|None=None; forecast_graphics:dict|None=None; icon_system:dict|None=None; local_data:dict|None=None; dayparts:dict|None=None; cache:dict|None=None; channels:dict|None=None; video:dict|None=None; performance:dict|None=None; custom_profiles:dict|None=None; tts:dict|None=None; notifications:dict|None=None
+    storm_guidance:dict|None=None; spc:dict|None=None; tropical:dict|None=None; history:dict|None=None; smart_programming:dict|None=None; story_engine:dict|None=None; forecast_graphics:dict|None=None; icon_system:dict|None=None; local_data:dict|None=None; dayparts:dict|None=None; cache:dict|None=None; channels:dict|None=None; video:dict|None=None; performance:dict|None=None; custom_profiles:dict|None=None; audio:dict|None=None; tts:dict|None=None; notifications:dict|None=None
     regions:dict|None=None; branding_profiles:dict|None=None; event_channels:dict|None=None; studio:dict|None=None
 class TtsTestRequest(BaseModel):
     text:str|None=None; voice:str|None=None; speed:float|None=None; volume:float|None=None
@@ -168,7 +171,7 @@ def api_settings(): return config_store.get()
 @app.get("/api/setup/status")
 def api_setup_status():
     settings=config_store.get(); locations=settings.get("locations") or []
-    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.3.9"}
+    return {"needs_setup":not bool(locations),"configured_locations":len(locations),"station_name":settings.get("station_name"),"version":"0.3.10"}
 
 @app.post("/api/setup/complete")
 def api_setup_complete(payload:SetupRequest):
@@ -201,7 +204,7 @@ def api_update_settings(payload:SettingsRequest):
     if set(changes) & {"channels", "regions", "event_channels", "branding_profiles", "studio"}: streamer.request_reconfigure()
     # Encoder/audio/performance changes need a worker restart. Presentation, station,
     # slide timing and theme settings hot-reload from ConfigStore in the renderer.
-    if set(changes) & {"video", "music", "performance", "tts"}: streamer.request_restart(reason="settings change")
+    if set(changes) & {"video", "music", "performance", "tts", "audio"}: streamer.request_restart(reason="settings change")
     observability.event("settings", "Settings updated", sections=sorted(changes))
     return updated
 
@@ -383,7 +386,7 @@ def api_status():
     imagery_status=imagery_manager.status()
     for product, row in (imagery_status.get("products") or {}).items(): sources[product] = {"last_success": _source_stamp(row.get("last_update")),"last_error": row.get("last_error"),"state": row.get("state"),"enabled": row.get("enabled", True),"available": row.get("available", False),}
     result = {
-        "version":"0.3.9","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign"),"regions":normalized_regions(settings)},"security":{"admin_authentication":authentication_enabled()},
+        "version":"0.3.10","network":{"name":settings.get("station_name"),"callsign":settings.get("station_callsign"),"regions":normalized_regions(settings)},"security":{"admin_authentication":authentication_enabled()},
         "weather":{"last_weather_update":snapshot.get("last_weather_update"),"last_alert_update":snapshot.get("last_alert_update"),"last_error":snapshot.get("last_error"),"locations_loaded":len(snapshot.get("locations",{})),"active_alerts":all_alerts,"location_status":snapshot.get("location_status") or {},"performance":weather_manager.performance_status()},
         "severe_weather":{"takeover_active":renderer.takeover_alert_for(pid) is not None,"top_event":((snapshot.get("alerts_by_location") or {}).get(pid) or [{}])[0].get("event") if ((snapshot.get("alerts_by_location") or {}).get(pid) or []) else None},
         "programming":renderer.programming_status(*renderer._channel_context(pid,"local")),
@@ -676,7 +679,7 @@ def api_profile_save(profile_name:str):
 @app.get("/api/backup")
 def api_backup():
     data=create_backup_bytes(config_store.get())
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.3.9-backup.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.3.10-backup.zip"'})
 
 @app.post("/api/backup/restore")
 async def api_backup_restore(request:Request):
@@ -693,18 +696,18 @@ def api_history_vacuum(): return history_store.vacuum()
 def api_diagnostics():
     settings=config_store.get(); status=api_status(); channels={"channels":_channel_payload(None)}
     data=create_diagnostics_bytes(settings,status,channels,streamer)
-    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.3.9-diagnostics.zip"'})
+    return Response(data,media_type="application/zip",headers={"Content-Disposition":'attachment; filename="weatherstream-v0.3.10-diagnostics.zip"'})
 
 @app.get("/health")
-def health(): return {"status":"ok","ready":_service_ready,"version":"0.3.9"}
+def health(): return {"status":"ok","ready":_service_ready,"version":"0.3.10"}
 
 @app.get("/health/live")
-def health_live(): return {"status":"ok","version":"0.3.9"}
+def health_live(): return {"status":"ok","version":"0.3.10"}
 
 @app.get("/health/ready")
 def health_ready():
-    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.3.9"},status_code=503)
-    return {"status":"ok","ready":True,"version":"0.3.9"}
+    if not _service_ready: return JSONResponse({"status":"starting","ready":False,"version":"0.3.10"},status_code=503)
+    return {"status":"ok","ready":True,"version":"0.3.10"}
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics(): return PlainTextResponse(observability.prometheus(), media_type="text/plain; version=0.0.4")

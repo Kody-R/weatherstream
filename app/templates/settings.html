@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.3.9 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.3.10 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.9</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.10</div>
       <h1>Channel Configuration</h1>
     </div>
     <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/studio">Studio</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
@@ -27,7 +27,7 @@
 
   <section class="grid two">
     <article class="card">
-      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.9</span></div>
+      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.10</span></div>
       <label class="checkbox"><input id="regionsEnabled" type="checkbox"> Enable explicit multi-region assignments</label>
       <div class="form-grid"><label>Region name<input id="regionName" placeholder="Gulf Coast"></label><label>Callsign<input id="regionCallsign" maxlength="12" placeholder="RWN-GC"></label><label>Theme<select id="regionTheme"><option value="local-90s">Local Cable 90s</option><option value="classic-blue">Classic Blue</option><option value="retro-2000">Retro 2000</option><option value="terminal-80s">Weather Terminal 80s</option><option value="cable-gold">Cable Gold</option></select></label><label>Branding profile<input id="regionBranding" value="default" maxlength="32"></label><label>Locations<select id="regionLocations" multiple size="4"></select></label></div>
       <button class="button ghost" type="button" onclick="addRegion()">Add Region</button><div id="regionList" class="locations top-gap"></div><button class="button top-gap" onclick="saveGeneral()">Save Network Regions</button>
@@ -46,7 +46,7 @@
 
 
   <section class="card">
-    <div class="card-head"><div><h2>Event Channel Identity</h2><p>Give each dedicated weather desk the approved v0.3.9 visual package while keeping the normal local channel on its selected station theme.</p></div><span class="pill">v0.3.9</span></div>
+    <div class="card-head"><div><h2>Event Channel Identity</h2><p>Give each dedicated weather desk the approved v0.3.10 visual package while keeping the normal local channel on its selected station theme.</p></div><span class="pill">v0.3.10</span></div>
     <div class="form-grid">
       <label class="checkbox"><input id="eventIdentityEnabled" type="checkbox"> Enable dedicated event-channel visual identities</label>
       <label class="checkbox"><input id="eventIdentityMotifs" type="checkbox"> Animated/subtle background motifs</label>
@@ -129,7 +129,7 @@
   </section>
 
   <section class="card">
-    <div class="card-head"><div><h2>Local Observations & Climate</h2><p>Prefer real nearby NWS station observations for current conditions, add local history context, modeled air-quality guidance, nearby USGS river gauges, and optional NOAA climate normals.</p></div><span class="pill">v0.3.9</span></div>
+    <div class="card-head"><div><h2>Local Observations & Climate</h2><p>Prefer real nearby NWS station observations for current conditions, add local history context, modeled air-quality guidance, nearby USGS river gauges, and optional NOAA climate normals.</p></div><span class="pill">v0.3.10</span></div>
     <div class="form-grid">
       <label class="checkbox"><input id="localObsEnabled" type="checkbox"> Discover nearby NWS observation stations</label>
       <label class="checkbox"><input id="localObsUseCurrent" type="checkbox"> Prefer NWS observations for Current Conditions</label>
@@ -152,7 +152,7 @@
         <h2>Presentation</h2>
         <p>Broadcast Motion 2.0, desk-specific transitions, screen-entry animation, station IDs, forecasts, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.3.9</span>
+      <span class="pill">v0.3.10</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -568,6 +568,26 @@
       <div id="lastError" class="error-box hidden"></div>
     </article>
   </section>
+<section class="card"><div class="card-head"><div><h2>RWN Voice &amp; Audio</h2><p>Cached, weather-aware narration. Video continues if audio fails. Piper voice installation uses the existing voice controls below.</p></div><span class="pill">SCHEMA 28</span></div>
+<div class="form-grid" id="rwnAudioFields">
+<label class="checkbox"><input id="rwnEnabled" type="checkbox">Enable Voice System</label>
+<label>Narration Mode<select id="rwnMode"><option value="off">Off</option><option value="minimal">Minimal</option><option value="local_on_8s">Local on the 8s</option><option value="full_weathercast">Full Weathercast</option><option value="severe_only">Severe Only</option></select></label>
+<label>Provider<select id="rwnProvider"><option value="piper">Piper (local)</option></select></label>
+<label>Voice Profile<select id="rwnProfile"><option value="broadcast">RWN Broadcast</option><option value="local">RWN Local</option><option value="news">RWN News</option><option value="severe">RWN Severe</option></select></label>
+<label>Speech Speed<input id="rwnSpeed" type="number" min="0.7" max="1.35" step=".01" value="1"></label>
+<label>Maximum Slide Extension<select id="rwnExtension"><option value="0">0 seconds</option><option value="2">2 seconds</option><option value="3" selected>3 seconds</option><option value="5">5 seconds</option></select></label>
+<label>Captions<select id="rwnCaptions"><option value="off">Off</option><option value="narration">Narration captions</option><option value="severe_only">Severe only</option><option value="always">Always (retain current script)</option></select></label>
+<label>Background Mode<select id="rwnBackground"><option value="none">None</option><option value="local_forecast">Local Forecast Only</option><option value="full_weathercast">Full Weathercast</option><option value="station_id">Station ID Only</option></select></label>
+<label>Bed filename in /config/audio/beds<input id="rwnBed" placeholder="forecast.wav"></label>
+<label>Music level (dB)<input id="rwnMusicDb" type="number" min="-60" max="0" value="-24"></label>
+<label>Ducked level (dB)<input id="rwnDuckDb" type="number" min="-60" max="0" value="-34"></label>
+<label class="checkbox"><input id="rwnDucking" type="checkbox" checked>Automatic ducking</label>
+<label class="checkbox"><input id="rwnBranding" type="checkbox">RWN sonic branding</label>
+<label class="checkbox"><input id="rwnSevere" type="checkbox" checked>Official severe warning narration</label>
+<label class="checkbox"><input id="rwnSounder" type="checkbox">Original RWN severe sounder</label>
+<label class="checkbox"><input id="rwnStory" type="checkbox" checked>Weather Story introductions</label>
+</div><div class="form-grid top-gap" id="rwnScreens"></div>
+<p>Severe warnings always interrupt ordinary audio. Official instructions cannot be edited. Preview plays only in your browser. Background beds use up to two minutes of supplied audio and loop with fades; legacy music remains available when Background Mode is None.</p></section>
 </main>
 <script>
 let settings = null;
@@ -588,6 +608,10 @@ async function jfetch(url, options={}) {
 }
 async function loadSettings() {
   settings = await jfetch('/api/settings');
+  const ra=settings.audio||{};
+  for(const [id,key] of Object.entries({rwnEnabled:'enabled',rwnDucking:'ducking',rwnBranding:'sonic_branding',rwnSevere:'severe_alerts',rwnSounder:'severe_sounder',rwnStory:'story_intro'})) document.getElementById(id).checked=!!ra[key];
+  for(const [id,key] of Object.entries({rwnMode:'mode',rwnProvider:'provider',rwnProfile:'profile',rwnSpeed:'speed',rwnExtension:'max_extension',rwnCaptions:'captions',rwnBackground:'background_mode',rwnBed:'bed_file',rwnMusicDb:'music_db',rwnDuckDb:'duck_db'})) if(ra[key]!=null) document.getElementById(id).value=ra[key];
+  document.getElementById('rwnScreens').innerHTML=['current','hourly','precipitation','rain_accumulation','wind_outlook','humidity_outlook','seven_day','nws_forecast','today_so_far','past_24_hours','air_quality','local_rivers','climate_context','event_summary','tropical_update','tropical_systems'].map(k=>`<label class="checkbox"><input type="checkbox" data-rwn-screen="${k}" ${(ra.screens||{})[k]!==false?'checked':''}>Narrate ${k.replaceAll('_',' ')}</label>`).join('');
   stationName.value = settings.station_name || '';
   stationCallsign.value = settings.station_callsign || '';
   stationSlogan.value = settings.station_slogan || '';
@@ -929,6 +953,7 @@ async function saveGeneral() {
     weather_refresh_seconds: Number(weatherRefresh.value || 600),
     alert_refresh_seconds: Number(alertRefresh.value || 60),
     nws_user_agent: nwsUserAgent.value.trim(),
+    audio: {...(settings.audio||{}), enabled:rwnEnabled.checked,mode:rwnMode.value,provider:rwnProvider.value,profile:rwnProfile.value,speed:Number(rwnSpeed.value),max_extension:Number(rwnExtension.value),captions:rwnCaptions.value,background_mode:rwnBackground.value,bed_file:rwnBed.value,music_db:Number(rwnMusicDb.value),duck_db:Number(rwnDuckDb.value),ducking:rwnDucking.checked,sonic_branding:rwnBranding.checked,severe_alerts:rwnSevere.checked,severe_sounder:rwnSounder.checked,story_intro:rwnStory.checked,screens:Object.fromEntries([...document.querySelectorAll('[data-rwn-screen]')].map(x=>[x.dataset.rwnScreen,x.checked]))},
     tts: {
       enabled: ttsEnabled.checked,
       provider: 'piper',

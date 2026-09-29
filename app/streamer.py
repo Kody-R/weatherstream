@@ -15,6 +15,8 @@ from typing import Any
 
 from app.hardware import choose_encoder, device_info, encoder_capabilities, normalize_device_setting
 from app.observability import observability
+from app.audio import AudioService, Script, PCM_RATE, normalize_audio
+from app.narration import allowed
 
 LIVE_DIR = Path(os.environ.get("WEATHERSTREAM_LIVE", "/tmp/weatherstream/live"))
 MUSIC_DIR = Path(os.environ.get("WEATHERSTREAM_MUSIC", "/music"))
@@ -33,7 +35,13 @@ class ChannelWorker:
         self.config_store = config_store
         self.renderer = renderer
         self.tts_manager = tts_manager
+        if not hasattr(tts_manager, "audio_service"):
+            tts_manager.audio_service = AudioService(tts_manager)
+        self.audio_service = tts_manager.audio_service
         self.key = key
+        self.audio = self.audio_service.director(key)
+        self._audio_prepare_at = 0.0
+        self._audio_revision = None
         self.location_id = location_id
         self.mode = mode
         self.primary_preview = primary_preview
@@ -76,7 +84,7 @@ class ChannelWorker:
         self.last_viewer_activity: float | None = None
         self.last_idle_at: float | None = None
         self.activation_count = 0
-        # v0.3.9 Studio Control Room manual takeover state. Runtime-only by
+        # v0.3.10 Studio Control Room manual takeover state. Runtime-only by
         # design: a restart always returns the channel to automatic programming.
         self._manual_takeover_lock = threading.RLock()
         self._manual_takeover: dict[str, Any] | None = None
@@ -200,7 +208,7 @@ class ChannelWorker:
         for key in ("encoder", "encoder_device", "output_fps", "content_fps", "bitrate"):
             if key in override:
                 video[key] = override[key]
-        return settings
+        return self._voice_settings(settings)
 
     def _runtime_render_overrides(self, settings: dict[str, Any]) -> dict[str, Any]:
         override = self._channel_override(settings)
@@ -208,6 +216,42 @@ class ChannelWorker:
         if self._adaptive_degraded:
             runtime["performance_degraded"] = True
         return runtime
+
+    def _voice_settings(self, settings):
+        cfg = normalize_audio(settings.get("audio"))
+        settings.setdefault("tts", {})["enabled"] = cfg["enabled"] and cfg["mode"] != "off"
+        settings["tts"]["local_on_8s"] = cfg["mode"] in {"local_on_8s", "full_weathercast"}
+        return settings
+
+    def prepare_audio(self):
+        """Called by the supervisor, including while an on-demand encoder is idle."""
+        try:
+            context = self.renderer.narration_context_for(self.location_id, self.mode)
+            settings = context["settings"]; cfg = normalize_audio(settings.get("audio"))
+            if not cfg["enabled"] or cfg["mode"] == "off":
+                self.audio.settings=settings
+                if self.audio.bus != "alert": self.audio.stop()
+                return
+            playout = self.renderer.playout_status(self.location_id, self.mode)
+            context["story"] = playout.get("story") or {}
+            revision = (self.renderer.weather_manager.revision(), self.config_store.revision())
+            if self.renderer.history_store and self.location_id:
+                context["past_24_hours"] = self.renderer.history_store.summary(self.location_id,24)
+                context["today_so_far"] = self.renderer.history_store.today_summary(self.location_id,(context["primary"].get("location") or {}).get("timezone"))
+            self.audio.prepare_story_audio(context, playout.get("sequence") or [], revision)
+            self.audio.refresh_cache()
+            self.audio.prepare_bed(settings)
+            durations={}
+            for slide,key in self.audio.keys.items():
+                cached=self.audio_service.cache.read(key)
+                if cached: durations[slide]=math.ceil(cached[1]["duration"]+2.5)
+            self.renderer.audio_durations[(self.location_id,self.mode)]=durations
+            if cfg["mode"] in {"local_on_8s","full_weathercast"}:
+                for phase in ["intro", *(self._local8_cfg(settings).get("sequence") or ["current","today","hourly","radar_local","seven_day"])]:
+                    text=self.tts_manager.local_on_8s_phase_text(phase,context["primary"],settings)
+                    if text: self.audio_service.request(Script(phase,text,set(),"local"),settings,self.key,revision)
+        except Exception as exc:
+            self.audio.last_error=str(exc)
 
     def _local8_cfg(self, settings: dict[str, Any]) -> dict[str, Any]:
         return (((settings.get("presentation") or {}).get("scheduled_updates") or {}))
@@ -330,6 +374,7 @@ class ChannelWorker:
         # Use fresh settings only when a block is active; this keeps the hot normal
         # video path from re-copying configuration solely for scheduler bookkeeping.
         settings = (context or self.renderer.narration_context_for(self.location_id, "local", now_wall)).get("settings") or self._effective_settings(self.config_store.get())
+        settings = self._voice_settings(settings)
         cfg = self._local8_cfg(settings)
         elapsed = max(0.0, mono - phase_started)
         minimum = self._local8_phase_min_seconds(phase, settings)
@@ -442,6 +487,7 @@ class ChannelWorker:
                 "duration_seconds": duration,
             }
         self.note_viewer_activity()
+        self.audio.stop()
         observability.event("studio", "Manual Studio takeover started", channel=self.key, slide=slide, duration_seconds=duration)
         return True, None
 
@@ -576,6 +622,7 @@ class ChannelWorker:
             "playlist_ready": bool(process_running and (self.output_dir / "index.m3u8").exists()),
             "path": f"/live/{self.key}/index.m3u8",
             "last_chime_alert_id": self.last_chime_alert_id,
+            "audio": self.audio.get_status(),
             "last_tts_alert_id": self.last_tts_alert_id,
             "last_tts_local_block_id": self.last_tts_local_block_id,
             "local_on_8s": local8,
@@ -711,7 +758,7 @@ class ChannelWorker:
         w, h = int(video["width"]), int(video["height"])
         render_fps = int(video.get("render_fps", 5)); output_fps = int(video.get("output_fps", 15))
         seg = int(video.get("hls_segment_seconds", 3)); list_size = int(video.get("hls_list_size", 10))
-        bitrate = str(video.get("bitrate", "2000k")); preset = str(video.get("encoder_preset", "superfast")); music_playlist = self._music_playlist(settings)
+        bitrate = str(video.get("bitrate", "2000k")); preset = str(video.get("encoder_preset", "superfast")); music_playlist = self._music_playlist(settings) if (settings.get("audio") or {}).get("background_mode", "none") == "none" else None
         requested_encoder = str(video.get("encoder", "software"))
         requested_device = normalize_device_setting(video.get("encoder_device", "auto"))
         self._active_encoder, self._active_encoder_device, self._encoder_fallback_reason = choose_encoder(
@@ -743,10 +790,10 @@ class ChannelWorker:
                 f"[1:a]volume={music_volume:.3f}[bg];"
                 "[2:a]asplit=2[ducksrc][ann];"
                 "[bg][ducksrc]sidechaincompress=threshold=0.008:ratio=12:attack=15:release=650[ducked];"
-                "[ducked][ann]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]"
+                "[ducked][ann]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[aout]"
             )
         else:
-            filt = f"[1:a]volume={music_volume:.3f}[bg];[bg][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]"
+            filt = f"[1:a]volume={music_volume:.3f}[bg];[bg][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[aout]"
         if self._active_encoder == "nvenc":
             video_args = ["-vf",f"fps={output_fps},format=yuv420p","-c:v","h264_nvenc","-preset","p3","-b:v",bitrate,"-maxrate",bitrate,"-bufsize","4000k"]
         elif self._active_encoder == "vaapi":
@@ -788,104 +835,64 @@ class ChannelWorker:
         return samples.tobytes()
 
     def _alert_audio_loop(self, write_fd: int, proc: subprocess.Popen) -> None:
-        """Feed chimes and narration into the auxiliary PCM announcement bus.
-
-        Local on the 8s narration is phase-aware in v0.2.2.1: the current phase
-        remains on screen while its exact screen-derived sentence is synthesized
-        and spoken. A qualifying severe alert immediately preempts any remaining
-        Local on the 8s audio and owns the bus.
-        """
-        chunk_frames = 2205  # 50 ms at 44.1 kHz
-        silence = b"\x00\x00\x00\x00" * chunk_frames
-        gap = b"\x00\x00\x00\x00" * int(44100 * 0.30)
-        bytes_per_second = 44100 * 2 * 2
-        raw_chime = self._make_chime()
-        pending = b""
-        pending_kind: str | None = None
-        last_chime_signature = self.last_chime_alert_id
+        size = 2205 * 4  # 50 ms blocks, bounded emergency preemption.
         next_check = 0.0
+        last_scope = None
         try:
             with os.fdopen(write_fd, "wb", buffering=0) as pipe:
                 while not self._stop.is_set() and not self._restart.is_set() and proc.poll() is None:
-                    mono = time.monotonic()
-                    if mono >= next_check:
-                        settings = self._effective_settings(self.config_store.get())
-                        alerts_cfg = settings.get("alerts") or {}
-                        tts_cfg = settings.get("tts") or {}
-                        active = self.renderer.takeover_alert_for(self.location_id)
-                        signature = str(active.get("id") or active.get("headline") or active.get("event")) if active else None
-
-                        if active:
-                            # Severe weather is the highest-priority programming and
-                            # audio state. Stop a Local on the 8s sentence at the next
-                            # 50 ms PCM chunk rather than letting it finish first.
-                            self._abort_local8("severe weather takeover")
-                            if pending_kind == "local8":
-                                pending = b""
-                                pending_kind = None
-
-                        if active and bool(alerts_cfg.get("chime_enabled", True)) and signature != last_chime_signature:
-                            chime = self._scale_pcm(raw_chime, float(alerts_cfg.get("chime_volume", 0.65)))
-                            pending += chime
-                            pending_kind = "severe"
-                            last_chime_signature = signature
-                            self.last_chime_alert_id = signature
-
-                        if (
-                            active
-                            and bool(tts_cfg.get("enabled", False))
-                            and bool(tts_cfg.get("severe_alerts", True))
-                            and signature != self.last_tts_alert_id
-                        ):
-                            text = self.tts_manager.severe_alert_text(active, settings)
-                            speech = self.tts_manager.request_pcm(text, settings, "severe")
-                            if speech:
-                                pending += gap + speech
-                                pending_kind = "severe"
-                                self.last_tts_alert_id = signature
-
-                        if (
-                            not active
-                            and self.mode == "local"
-                            and bool(tts_cfg.get("enabled", False))
-                            and bool(tts_cfg.get("local_on_8s", True))
-                            and not pending
-                        ):
-                            state = self._local8_audio_snapshot()
-                            if state.get("active") and not state.get("audio_queued"):
-                                phase_started = state.get("phase_started_mono")
-                                cfg = self._local8_cfg(settings)
-                                lead = max(0.0, min(3.0, float(cfg.get("phase_lead_seconds", 0.8))))
-                                if phase_started is not None and mono - float(phase_started) >= lead:
-                                    text = str(state.get("phase_text") or "").strip()
-                                    if text:
-                                        phase = str(state.get("phase") or "phase")
-                                        token = int(state.get("phase_token") or 0)
-                                        speech = self.tts_manager.request_pcm(text, settings, f"local8_{phase}")
-                                        if speech:
-                                            duration = len(speech) / float(bytes_per_second)
-                                            if self._mark_local8_audio_queued(token, duration):
-                                                pending = speech
-                                                pending_kind = "local8"
-
-                        next_check = mono + 0.5
-
-                    need = len(silence)
-                    if pending:
-                        block = pending[:need]
-                        pending = pending[need:]
-                        if len(block) < need:
-                            block += silence[:need-len(block)]
-                        if not pending:
-                            pending_kind = None
-                    else:
-                        block = silence
                     try:
-                        pipe.write(block)
-                    except (BrokenPipeError, OSError):
-                        break
+                        mono = time.monotonic()
+                        if mono >= next_check:
+                            settings = self._effective_settings(self.config_store.get())
+                            self.audio.settings = settings
+                            cfg = normalize_audio(settings.get("audio"))
+                            active = self.renderer.takeover_alert_for(self.location_id)
+                            local = self._local8_audio_snapshot()
+                            manual = self._manual_takeover_status()
+                            scope = (bool(active), bool(local.get("active")), local.get("phase_token"), manual.get("started_at"), manual.get("slide"))
+                            if scope != last_scope:
+                                self.audio.stop(); self.audio.token = None; last_scope = scope
+                            if active:
+                                self._abort_local8("severe weather takeover")
+                                self.clear_manual_takeover("severe_weather_takeover")
+                                self.audio.interrupt(active, settings)
+                                # Preserve legacy non-voice warning chime when voice is disabled.
+                                signature = str(active.get("id") or active.get("headline") or active.get("event"))
+                                if not cfg["enabled"] and (settings.get("alerts") or {}).get("chime_enabled",True) and signature != self.last_chime_alert_id:
+                                    self.audio.play(Script("alert","",set(),"severe",True),self._scale_pcm(self._make_chime(),float((settings.get("alerts") or {}).get("chime_volume",.65))),"alert")
+                                    self.last_chime_alert_id=signature
+                            else:
+                                self.audio.return_to_program_audio()
+                                if not cfg["enabled"] or cfg["mode"] == "off": self.audio.stop()
+                                elif local.get("active") and allowed(cfg, "current", local8=True):
+                                    if not local.get("audio_queued") and mono-float(local.get("phase_started_mono") or mono)>=float(self._local8_cfg(settings).get("phase_lead_seconds",.8)):
+                                        script=Script(str(local.get("phase")),str(local.get("phase_text") or ""),set(),"local")
+                                        if script.text:
+                                            _,cached=self.audio_service.request(script,settings,self.key)
+                                            if cached:
+                                                pcm=cached[0]
+                                                if cfg['sonic_branding'] and local.get('phase')=='intro': pcm=self.audio.sounder('local')+pcm
+                                                if self._mark_local8_audio_queued(int(local["phase_token"]),len(pcm)/PCM_RATE): self.audio.play(script,pcm)
+                                elif not manual.get("active"):
+                                    playout=self.renderer.playout_status(self.location_id,self.mode)
+                                    seq=playout.get("sequence") or []
+                                    total=sum(row["duration_seconds"] for row in seq) or 1
+                                    cycle=int((time.time()-self.renderer.cycle_started)//total)
+                                    token=(cycle,playout.get("index"),playout.get("current_slide"),self.audio.desk)
+                                    self.audio.tick(playout,token)
+                            next_check=mono+.1
+                        bed=self.audio.bed_block(size,local8=self._local8_active)
+                        block=self.audio.block(size,bed)
+                    except Exception as exc:
+                        self.audio.last_error=str(exc); self.audio.stop(); block=b"\0"*size
+                        next_check=time.monotonic()+1
+                    try: pipe.write(block)
+                    except (BrokenPipeError,OSError): break
         except OSError:
             pass
+        finally:
+            self.audio.stop()
 
     def _clean_live(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -954,7 +961,17 @@ class ChannelWorker:
                         runtime = self._runtime_render_overrides(settings)
                         runtime.update(self._local8_tick(now))
                         runtime.update(self._manual_takeover_runtime(now))
-                        image=self.renderer.render_channel(now, self.location_id, self.mode, runtime_overrides=runtime); frame_bytes=image.tobytes()
+                        if not runtime.get("force_slide") and self.audio.pending and self.audio.current and self.audio.bus == "voice" and not self.renderer.takeover_alert_for(self.location_id):
+                            airing=self.renderer.playout_status(self.location_id,self.mode,now).get("current_slide")
+                            if airing != self.audio.current.slide:
+                                runtime.update(force_slide=self.audio.current.slide,force_progress=1.0)
+                        image=self.renderer.render_channel(now, self.location_id, self.mode, runtime_overrides=runtime)
+                        try:
+                            from app.audio_captions import draw_caption
+                            draw_caption(image,self.audio.caption())
+                        except Exception:
+                            pass
+                        frame_bytes=image.tobytes()
                         self._frames_rendered += 1; self._render_seconds_total += time.perf_counter()-started
                         next_content = tick + content_interval
                     if self._process.stdin is None:
@@ -1015,6 +1032,9 @@ class Streamer:
         self.config_store = config_store
         self.renderer = renderer
         self.tts_manager = tts_manager
+        if not hasattr(tts_manager, "audio_service"):
+            tts_manager.audio_service = AudioService(tts_manager)
+        self.audio_service = tts_manager.audio_service
         self.tropical_manager = tropical_manager
         self.event_manager = event_manager
         self._stop = threading.Event()
@@ -1219,6 +1239,7 @@ class Streamer:
                     workers = list(self._workers.values())
 
                 for worker in workers:
+                    worker.prepare_audio()
                     lifecycle = worker.lifecycle_mode(settings)
                     running = worker.thread_active() or bool(worker._process and worker._process.poll() is None)
                     severe_active = worker.mode == "severe" and severe_auto and self.renderer.takeover_alert_for(worker.location_id) is not None

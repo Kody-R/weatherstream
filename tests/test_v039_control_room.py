@@ -11,7 +11,7 @@ from app.control_room import source_health
 
 class V039ControlRoomTests(unittest.TestCase):
     def test_schema_27_defaults(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"], 27)
+        self.assertEqual(DEFAULT_SETTINGS["version"], 28)
         control=DEFAULT_SETTINGS["studio"]["control_room"]
         self.assertTrue(control["safe_area"])
         self.assertEqual(control["auto_refresh_seconds"], 3)
@@ -24,7 +24,7 @@ class V039ControlRoomTests(unittest.TestCase):
             path.write_text(json.dumps({"version":26,"studio":{"sequences":{"local":["current","hourly","seven_day"]}}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",path):
                 upgraded=ConfigStore().get()
-        self.assertEqual(upgraded["version"],27)
+        self.assertEqual(upgraded["version"],28)
         self.assertEqual(upgraded["studio"]["sequences"]["local"],["current","hourly","seven_day"])
         self.assertTrue(upgraded["studio"]["control_room"]["show_source_health"])
 
