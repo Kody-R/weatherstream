@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from app.observability import observability
+from app.localdata import fetch_air_quality, fetch_nearby_rivers, fetch_gauge_history, fetch_ncei_daily_normals
 
 OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
@@ -149,7 +150,7 @@ def fetch_storm_guidance(location: dict[str, Any], client: httpx.Client | None =
 
 def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.4 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     lat = float(location["latitude"])
@@ -192,13 +193,160 @@ def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.
         "periods": clean_periods,
         "office": props.get("cwa") or props.get("gridId") or "",
         "forecast_url": forecast_url,
+        "observation_stations_url": props.get("observationStations") or "",
         "error": None,
     }
 
 
+def _qv(props: dict[str, Any], key: str) -> tuple[float | None, str]:
+    row = props.get(key) or {}
+    try:
+        value = float(row.get("value")) if row.get("value") is not None else None
+    except Exception:
+        value = None
+    return value, str(row.get("unitCode") or "")
+
+
+def _convert_obs_value(value: float | None, unit: str, kind: str) -> float | None:
+    if value is None:
+        return None
+    unit = unit.lower()
+    if kind in {"temperature", "dewpoint"}:
+        return value * 9.0 / 5.0 + 32.0 if "degc" in unit else value
+    if kind in {"wind", "gust"}:
+        if "km_h-1" in unit or "km/h" in unit:
+            return value * 0.621371
+        if "m_s-1" in unit or "m/s" in unit:
+            return value * 2.23694
+        return value
+    if kind == "pressure":
+        return value / 100.0 if unit.endswith(":pa") or unit == "pa" or "unit:pa" in unit else value
+    if kind == "visibility":
+        return value / 1609.344 if unit.endswith(":m") or unit == "m" or "unit:m" in unit else value
+    if kind == "precip":
+        return value / 25.4 if unit.endswith(":mm") or unit == "mm" or "unit:mm" in unit else value
+    return value
+
+
+def fetch_nws_observation(location: dict[str, Any], user_agent: str, observation_stations_url: str = "", client: httpx.Client | None = None) -> dict[str, Any]:
+    headers = {
+        "User-Agent": user_agent or "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
+        "Accept": "application/geo+json",
+    }
+    owned = client is None
+    client = client or httpx.Client(timeout=12.0, follow_redirects=True)
+    try:
+        stations_url = observation_stations_url
+        if not stations_url:
+            lat = float(location["latitude"]); lon = float(location["longitude"])
+            point_resp = client.get(NWS_POINTS.format(lat=f"{lat:.4f}", lon=f"{lon:.4f}"), headers=headers, timeout=12.0)
+            point_resp.raise_for_status()
+            stations_url = (point_resp.json().get("properties") or {}).get("observationStations") or ""
+        if not stations_url:
+            raise RuntimeError("NWS point did not provide an observation-station link.")
+        stations_resp = client.get(stations_url, headers=headers, params={"limit": 4}, timeout=12.0)
+        stations_resp.raise_for_status()
+        features = stations_resp.json().get("features") or []
+        if not features:
+            raise RuntimeError("No NWS observation station was available for this point.")
+        last_error = None
+        for station in features[:4]:
+            sp = station.get("properties") or {}
+            station_id = sp.get("stationIdentifier") or str(station.get("id") or "").rstrip("/").split("/")[-1]
+            if not station_id:
+                continue
+            try:
+                obs_resp = client.get(f"https://api.weather.gov/stations/{station_id}/observations/latest", headers=headers, timeout=12.0)
+                obs_resp.raise_for_status()
+                props = obs_resp.json().get("properties") or {}
+                t, tu = _qv(props, "temperature"); dp, dpu = _qv(props, "dewpoint")
+                rh, _ = _qv(props, "relativeHumidity"); ws, wsu = _qv(props, "windSpeed")
+                wg, wgu = _qv(props, "windGust"); wd, _ = _qv(props, "windDirection")
+                pr, pru = _qv(props, "barometricPressure"); vis, visu = _qv(props, "visibility")
+                rain, rainu = _qv(props, "precipitationLastHour")
+                return {
+                    "station_id": station_id,
+                    "station_name": sp.get("name") or props.get("stationName") or station_id,
+                    "timestamp": props.get("timestamp"),
+                    "description": props.get("textDescription") or "",
+                    "temperature_f": _convert_obs_value(t, tu, "temperature"),
+                    "dewpoint_f": _convert_obs_value(dp, dpu, "dewpoint"),
+                    "humidity": rh,
+                    "wind_speed_mph": _convert_obs_value(ws, wsu, "wind"),
+                    "wind_gust_mph": _convert_obs_value(wg, wgu, "gust"),
+                    "wind_direction_degrees": wd,
+                    "pressure_hpa": _convert_obs_value(pr, pru, "pressure"),
+                    "visibility_miles": _convert_obs_value(vis, visu, "visibility"),
+                    "precipitation_last_hour_in": _convert_obs_value(rain, rainu, "precip"),
+                    "source": "NWS / MADIS observation",
+                    "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+            except Exception as exc:
+                last_error = exc
+                continue
+        raise RuntimeError(str(last_error or "No NWS station returned a usable latest observation."))
+    finally:
+        if owned:
+            client.close()
+
+
+def _nws_description_code(description: str) -> int | None:
+    text = str(description or "").strip().lower()
+    if not text:
+        return None
+    if "thunder" in text or "t-storm" in text:
+        return 95
+    if "freezing rain" in text or "ice pellet" in text or "sleet" in text:
+        return 66
+    if "snow" in text:
+        return 71
+    if "drizzle" in text:
+        return 51
+    if "rain" in text or "shower" in text:
+        return 61
+    if any(word in text for word in ("fog", "mist", "haze", "smoke")):
+        return 45
+    if "overcast" in text or "cloudy" in text and "partly" not in text and "mostly sunny" not in text:
+        return 3
+    if "partly cloudy" in text or "partly sunny" in text:
+        return 2
+    if "mostly cloudy" in text:
+        return 3
+    if "mostly clear" in text or "mostly sunny" in text:
+        return 1
+    if "clear" in text or "sunny" in text or "fair" in text:
+        return 0
+    return None
+
+
+def merge_observation_into_current(model_current: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
+    current = copy.deepcopy(model_current or {})
+    mapping = {
+        "temperature_2m": "temperature_f", "relative_humidity_2m": "humidity",
+        "surface_pressure": "pressure_hpa", "wind_speed_10m": "wind_speed_mph",
+        "wind_gusts_10m": "wind_gust_mph", "wind_direction_10m": "wind_direction_degrees",
+        "visibility_miles": "visibility_miles", "dewpoint_f": "dewpoint_f",
+        "precipitation": "precipitation_last_hour_in",
+    }
+    for target, source in mapping.items():
+        if observation.get(source) is not None:
+            current[target] = observation.get(source)
+    if observation.get("description"):
+        current["description"] = observation["description"]
+        observed_code = _nws_description_code(observation["description"])
+        if observed_code is not None:
+            current["weather_code"] = observed_code
+    current["wind_cardinal"] = wind_direction(current.get("wind_direction_10m"))
+    current["observation_source"] = observation.get("source")
+    current["station_id"] = observation.get("station_id")
+    current["station_name"] = observation.get("station_name")
+    current["observation_time"] = observation.get("timestamp")
+    return current
+
+
 def fetch_alerts(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> list[dict[str, Any]]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.4 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.9 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     point = f"{float(location['latitude']):.4f},{float(location['longitude']):.4f}"
@@ -416,7 +564,11 @@ class WeatherManager:
         errors: list[str] = []
         open_ok = 0
         nws_ok = 0
-        history_pending: list[tuple[str, dict[str, Any], None]] = []
+        observation_ok = 0
+        air_ok = 0
+        rivers_ok = 0
+        climate_ok = 0
+        history_pending: list[tuple[str, dict[str, Any], dt.datetime | None]] = []
 
         def fetch_location(location: dict[str, Any]):
             lid = location["id"]
@@ -436,9 +588,9 @@ class WeatherManager:
                     data["stale"] = True
                     data["stale_reason"] = str(exc)
                 else:
-                    return lid, None, weather_ok, nws_success, weather_error
+                    return lid, None, weather_ok, nws_success, False, weather_error
 
-            # Every ZIP gets an NWS narrative forecast in v0.1.8.1.
+            # Every ZIP gets an NWS narrative forecast plus an observed-conditions layer.
             try:
                 data["nws"] = fetch_nws_forecast(location, settings.get("nws_user_agent", ""), self._client)
                 nws_success = True
@@ -452,20 +604,94 @@ class WeatherManager:
                 else:
                     data["nws"] = {"periods": [], "office": "", "error": str(exc)}
                 self._set_location_status(lid, "nws_forecast", ok=False, error=str(exc), cached=bool(previous_nws.get("periods")))
-            return lid, data, weather_ok, nws_success, weather_error
+
+            local_cfg = settings.get("local_data") or {}
+            observed_success = False
+            if (local_cfg.get("observations") or {}).get("enabled", True):
+                try:
+                    observation = fetch_nws_observation(location, settings.get("nws_user_agent", ""), (data.get("nws") or {}).get("observation_stations_url", ""), self._client)
+                    data["model_current"] = copy.deepcopy(data.get("current") or {})
+                    data["observation"] = observation
+                    observed_current = merge_observation_into_current(data.get("current") or {}, observation)
+                    data["observed_current"] = observed_current
+                    if (local_cfg.get("observations") or {}).get("use_for_current", True):
+                        data["current"] = observed_current
+                        data["fetched_at"] = observation.get("timestamp") or data.get("fetched_at")
+                    observed_success = True
+                    self._set_location_status(lid, "nws_observation", ok=True)
+                except Exception as exc:
+                    previous_obs = (previous_locations.get(lid) or {}).get("observation") or {}
+                    if previous_obs:
+                        data["observation"] = copy.deepcopy(previous_obs)
+                        data["observation"]["stale"] = True
+                        data["observation"]["error"] = str(exc)
+                    self._set_location_status(lid, "nws_observation", ok=False, error=str(exc), cached=bool(previous_obs))
+
+            aq_cfg = local_cfg.get("air_quality") or {}
+            if aq_cfg.get("enabled", True):
+                try:
+                    data["air_quality"] = fetch_air_quality(location, self._client)
+                    self._set_location_status(lid, "air_quality", ok=True)
+                except Exception as exc:
+                    previous_aq = (previous_locations.get(lid) or {}).get("air_quality") or {}
+                    if previous_aq:
+                        data["air_quality"] = copy.deepcopy(previous_aq); data["air_quality"]["stale"] = True
+                    self._set_location_status(lid, "air_quality", ok=False, error=str(exc), cached=bool(previous_aq))
+
+            river_cfg = local_cfg.get("rivers") or {}
+            if river_cfg.get("enabled", True):
+                try:
+                    rivers = fetch_nearby_rivers(location, int(river_cfg.get("radius_miles", 60)), int(river_cfg.get("max_gauges", 3)), self._client)
+                    if rivers.get("gauges"):
+                        try:
+                            rivers["primary_history"] = fetch_gauge_history(rivers["gauges"][0].get("id") or "", int(river_cfg.get("trend_hours", 6)), self._client)
+                        except Exception:
+                            rivers["primary_history"] = []
+                    data["rivers"] = rivers
+                    self._set_location_status(lid, "usgs_rivers", ok=True)
+                except Exception as exc:
+                    previous_rivers = (previous_locations.get(lid) or {}).get("rivers") or {}
+                    if previous_rivers:
+                        data["rivers"] = copy.deepcopy(previous_rivers); data["rivers"]["stale"] = True
+                    self._set_location_status(lid, "usgs_rivers", ok=False, error=str(exc), cached=bool(previous_rivers))
+
+            climate_cfg = local_cfg.get("climate") or {}
+            station_id = str(climate_cfg.get("ncei_station_id") or "").strip()
+            if climate_cfg.get("enabled", True) and station_id:
+                try:
+                    data["climate"] = fetch_ncei_daily_normals(station_id, client=self._client)
+                    self._set_location_status(lid, "climate_normals", ok=bool(data["climate"]))
+                except Exception as exc:
+                    previous_climate = (previous_locations.get(lid) or {}).get("climate") or {}
+                    if previous_climate:
+                        data["climate"] = copy.deepcopy(previous_climate); data["climate"]["stale"] = True
+                    self._set_location_status(lid, "climate_normals", ok=False, error=str(exc), cached=bool(previous_climate))
+
+            return lid, data, weather_ok, nws_success, observed_success, weather_error
 
         futures = [self._executor.submit(fetch_location, location) for location in locations]
         for future in as_completed(futures):
-            lid, data, weather_success, nws_success, weather_error = future.result()
+            lid, data, weather_success, nws_success, observed_success, weather_error = future.result()
             if weather_error:
                 errors.append(weather_error)
             open_ok += int(weather_success)
             nws_ok += int(nws_success)
+            observation_ok += int(observed_success)
             if data is None:
                 continue
+            air_ok += int(bool((data.get("air_quality") or {}).get("fetched_at")))
+            rivers_ok += int(bool((data.get("rivers") or {}).get("fetched_at")))
+            climate_ok += int(bool((data.get("climate") or {}).get("fetched_at")))
             new_locations[lid] = data
             if self.history_store and (settings.get("history") or {}).get("enabled", True):
-                history_pending.append((lid, data.get("current") or {}, None))
+                when = None
+                try:
+                    stamp = (data.get("observation") or {}).get("timestamp")
+                    if stamp:
+                        when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                except Exception:
+                    when = None
+                history_pending.append((lid, data.get("observed_current") or data.get("current") or {}, when))
 
         if self.history_store and (settings.get("history") or {}).get("enabled", True):
             try:
@@ -481,6 +707,15 @@ class WeatherManager:
 
         self._mark_source("open_meteo", open_ok > 0, None if open_ok else ("; ".join(errors) or "No locations loaded"))
         self._mark_source("nws_forecast", nws_ok > 0, None if nws_ok else "NWS forecast unavailable for all configured ZIPs")
+        local_cfg = settings.get("local_data") or {}
+        if (local_cfg.get("observations") or {}).get("enabled", True):
+            self._mark_source("nws_observations", observation_ok > 0, None if observation_ok else "NWS station observations unavailable")
+        if (local_cfg.get("air_quality") or {}).get("enabled", True):
+            self._mark_source("air_quality", air_ok > 0, None if air_ok else "Air-quality guidance unavailable")
+        if (local_cfg.get("rivers") or {}).get("enabled", True):
+            self._mark_source("usgs_rivers", rivers_ok > 0, None if rivers_ok else "USGS river data unavailable")
+        if (local_cfg.get("climate") or {}).get("enabled", True) and str((local_cfg.get("climate") or {}).get("ncei_station_id") or "").strip():
+            self._mark_source("climate_normals", climate_ok > 0, None if climate_ok else "NOAA climate normals unavailable")
         with self._lock:
             self._snapshot["locations"] = new_locations
             self._snapshot["last_weather_update"] = dt.datetime.now(dt.timezone.utc).isoformat()

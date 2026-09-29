@@ -2,7 +2,7 @@ services:
   weatherstream:
     build: .
     # After publishing to GHCR, replace "build: ." with, for example:
-    image: ghcr.io/kody-r/weatherstream:v0.3.4
+    image: ghcr.io/kody-r/weatherstream:v0.3.9
     container_name: weatherstream
     init: true
     restart: unless-stopped

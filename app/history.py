@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 import threading
+from zoneinfo import ZoneInfo
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,10 @@ class HistoryStore:
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(observations)").fetchall()}
+            for name, kind in (("dewpoint_f","REAL"),("visibility_miles","REAL"),("source","TEXT"),("station_id","TEXT")):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE observations ADD COLUMN {name} {kind}")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_obs_location_time ON observations(location_id, observed_at)")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
@@ -75,26 +80,34 @@ class HistoryStore:
                 location_id, stamp, current.get("temperature_2m"), current.get("apparent_temperature"),
                 current.get("relative_humidity_2m"), current.get("surface_pressure"), current.get("wind_speed_10m"),
                 current.get("wind_gusts_10m"), current.get("precipitation"), current.get("cloud_cover"), current.get("weather_code"),
+                current.get("dewpoint_f"), current.get("visibility_miles"), current.get("observation_source") or "Open-Meteo", current.get("station_id"),
             ))
         if not rows:
             return 0
         with self._lock, closing(self._connect()) as conn:
-            conn.executemany(
-                """
-                INSERT INTO observations (
-                    location_id, observed_at, temperature, apparent_temperature, humidity,
-                    pressure_hpa, wind_speed, wind_gust, precipitation, cloud_cover, weather_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+            inserted = 0
+            for row in rows:
+                exists = conn.execute("SELECT 1 FROM observations WHERE location_id=? AND observed_at=? LIMIT 1", (row[0], row[1])).fetchone()
+                if exists:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO observations (
+                        location_id, observed_at, temperature, apparent_temperature, humidity,
+                        pressure_hpa, wind_speed, wind_gust, precipitation, cloud_cover, weather_code,
+                        dewpoint_f, visibility_miles, source, station_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, row
+                )
+                inserted += 1
             conn.commit()
-            self._row_count += len(rows)
-            self._invalidate_locked()
-        return len(rows)
+            if inserted:
+                self._row_count += inserted
+                self._invalidate_locked()
+        return inserted
 
     def recent(self, location_id: str, hours: int = 24, limit: int = 500) -> list[dict[str, Any]]:
-        hours = max(1, min(24 * 31, int(hours)))
+        hours = max(1, min(24 * 3650, int(hours)))
         limit = max(1, min(5000, int(limit)))
         with self._lock:
             key = (location_id, hours, limit, self._revision)
@@ -118,7 +131,7 @@ class HistoryStore:
         return list(result)
 
     def summary(self, location_id: str, hours: int = 24) -> dict[str, Any]:
-        hours = max(1, min(24 * 31, int(hours)))
+        hours = max(1, min(24 * 3650, int(hours)))
         with self._lock:
             key = (location_id, hours, self._revision)
             cached = self._summary_cache.get(key)
@@ -141,16 +154,61 @@ class HistoryStore:
             "high": max(temps) if temps else None,
             "low": min(temps) if temps else None,
             "max_gust": max(gusts) if gusts else None,
-            "precipitation": sum(max(0.0, float(x)) for x in precip) if precip else 0.0,
+            "precipitation": max([float(x) for x in precip] or [0.0]),
             "pressure_trend": trend,
+            "pressure_delta_hpa": (pressure[-1] - pressure[0]) if len(pressure) >= 2 else None,
+            "temperature_change": (temps[-1] - temps[0]) if len(temps) >= 2 else None,
             "first": rows[0]["observed_at"],
             "last": rows[-1]["observed_at"],
+            "source": rows[-1].get("source"),
+            "station_id": rows[-1].get("station_id"),
         }
         with self._lock:
             self._summary_cache[key] = result
             if len(self._summary_cache) > 128:
                 self._summary_cache.pop(next(iter(self._summary_cache)))
         return dict(result)
+
+    def since(self, location_id: str, cutoff: dt.datetime, limit: int = 5000) -> list[dict[str, Any]]:
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=dt.timezone.utc)
+        with self._lock, closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM observations WHERE location_id=? AND observed_at>=? ORDER BY observed_at ASC LIMIT ?",
+                (location_id, cutoff.astimezone(dt.timezone.utc).isoformat(), max(1, min(10000, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def today_summary(self, location_id: str, timezone_name: str | None = None) -> dict[str, Any]:
+        try:
+            tz = ZoneInfo(str(timezone_name or "UTC"))
+        except Exception:
+            tz = dt.timezone.utc
+        local_now = dt.datetime.now(tz)
+        local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = self.since(location_id, local_midnight.astimezone(dt.timezone.utc))
+        if not rows:
+            return {"samples": 0, "date": local_now.date().isoformat()}
+        temps = [(r.get("temperature"), r.get("observed_at")) for r in rows if r.get("temperature") is not None]
+        gusts = [(r.get("wind_gust"), r.get("observed_at")) for r in rows if r.get("wind_gust") is not None]
+        pressures = [float(r["pressure_hpa"]) for r in rows if r.get("pressure_hpa") is not None]
+        high = max(temps, key=lambda x: float(x[0])) if temps else (None, None)
+        low = min(temps, key=lambda x: float(x[0])) if temps else (None, None)
+        gust = max(gusts, key=lambda x: float(x[0])) if gusts else (None, None)
+        trend = None
+        delta_p = None
+        if len(pressures) >= 2:
+            delta_p = pressures[-1] - pressures[0]
+            trend = "RISING" if delta_p > 1.2 else "FALLING" if delta_p < -1.2 else "STEADY"
+        temp_change = float(temps[-1][0]) - float(temps[0][0]) if len(temps) >= 2 else None
+        return {
+            "samples": len(rows), "date": local_now.date().isoformat(),
+            "high": high[0], "high_time": high[1], "low": low[0], "low_time": low[1],
+            "max_gust": gust[0], "max_gust_time": gust[1], "temperature_change": temp_change,
+            "pressure_trend": trend, "pressure_delta_hpa": delta_p,
+            "first": rows[0].get("observed_at"), "last": rows[-1].get("observed_at"),
+            "source": rows[-1].get("source"), "station_id": rows[-1].get("station_id"),
+        }
 
     def cleanup(self, retention_days: int = 90) -> int:
         cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=max(1, int(retention_days)))

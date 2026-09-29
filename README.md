@@ -1,22 +1,50 @@
-# WeatherStream v0.3.4 — RWN Icon & Motion System
+# WeatherStream v0.3.9 — Studio Control Room 2.0
 
-WeatherStream is a self-hosted Docker broadcast engine that turns weather forecasts, official NWS/NOAA products, radar, alerts, imagery, branding, and background audio into HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.4 gives Roller Weather Network a complete custom weather-icon, metric-symbol, alert-identity, and subtle motion system.**
+WeatherStream is a self-hosted Docker broadcast engine that turns local observations, forecasts, official NWS/NOAA products, radar, alerts, environmental data, branding, audio, and automated programming into HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.9 adds Studio Control Room 2.0: a live production interface for seeing what is actually on air, what is next, why the Weather Story Director made its decisions, how fresh each data source is, and when an operator has temporarily taken control.**
 
-## What's new in v0.3.4
+## What's new in v0.3.9
 
-- **Custom RWN weather icons:** 28 weather/condition identities with separate hero, standard, and compact artwork.
-- **Day/night variants:** clear, mostly clear, and partly cloudy automatically use the correct celestial artwork.
-- **RWN Motion System:** selected hero/standard conditions use subtle four-frame animation for clouds, rain, snow, lightning, wind, and tropical systems.
-- **RWN metric symbols:** temperature, humidity, dew point, wind, gusts, pressure, cloud cover, rain, UV, visibility, sunrise, and sunset.
-- **Alert identity:** dedicated tornado, severe thunderstorm, flash flood, winter storm, extreme heat, wildfire/smoke, and tropical artwork.
-- **Central icon resolver:** screens request a condition and size instead of referencing individual asset filenames.
-- **Legacy fallback:** disabling the icon system—or a missing asset—falls back to WeatherStream's previous procedural symbols.
-- **Admin controls:** icon system, animation, motion speed, metric icons, and alert icons are configurable.
-- **207 bundled transparent PNG assets**, plus the reproducible `tools/generate_rwn_icons.py` generator.
-- Settings schema **22** upgrades v0.3.3 installations without changing existing channel/map/Studio sequencing.
-- **51 automated tests plus 13 render subtests** pass.
+- **LIVE / NEXT production monitors** driven by the same renderer timeline used on air
+- **Graphical live rundown** with LIVE/NEXT/QUEUED states and slide thumbnails
+- **Weather Story reasoning** with story score, evidence, NOW/NEXT/LATER/CONTEXT blocks, and active override source
+- **Source Health telemetry** with HEALTHY, CACHED, STALE, ERROR, WAITING, and DISABLED states
+- **Runtime-only operator takeovers** that can take one slide live for 30 seconds to 15 minutes without publishing a permanent rundown
+- **Severe-weather safety:** official severe takeovers always supersede and clear operator takeovers
+- **Per-channel live preview** plus generated preview fallback when an on-demand encoder is idle
+- **Broadcast title/action-safe guides** in the Control Room monitors
+- **Recent control activity** from WeatherStream observability events
+- **Separate Control Room preferences** so saving safe-area/refresh settings does not publish a rundown
+- **Schema 27 migration** preserving v0.3.8 Broadcast Motion, Event Channel Identity, Weather Story, channel, Studio, and encoder settings while discarding any stale development-era persisted takeover state
 
-See `V0.3.4_RELEASE_NOTES.md` for the complete release notes.
+See `V0.3.9_RELEASE_NOTES.md` for complete release notes.
+
+## Previous release: v0.3.8
+
+### WeatherStream v0.3.8 — RWN Broadcast Motion & Transitions
+
+v0.3.8 added automatic RWN network motion, event-desk signature transitions, subtle screen-entry animation, and immediate hard cuts for qualifying severe-warning takeovers while preserving the complete v0.3.7 event-desk system.
+
+## Previous release: v0.3.7
+
+### WeatherStream v0.3.7 — RWN Event Channel Identity
+
+v0.3.7 gave Severe, Flood, Winter, Heat, Wildfire/Smoke, and Tropical channels their own complete RWN visual packages while keeping the local channel on its selected station theme.
+
+## Previous release: v0.3.6
+
+### WeatherStream v0.3.6 — RWN Weather Story Engine
+
+v0.3.6 added scored weather-story classification, NOW/NEXT/LATER/CONTEXT adaptive rundowns, supporting stories, story stabilization, the Weather Story brief, a story-aware local data ribbon, and Studio/Dashboard director controls. Schema 24 preserved v0.3.5 configuration and custom order.
+
+## Previous release: v0.3.5
+
+v0.3.5 added real NWS station observations, observation-aware history, Today So Far, Past 24 Hours, modeled AQI guidance, nearby USGS river gauges, and optional NOAA 1991–2020 climate normals. These products are now inputs to the v0.3.6 Story Director.
+
+## Previous release: v0.3.4
+
+### WeatherStream v0.3.4 — RWN Icon & Motion System
+
+v0.3.4 introduced the bundled RWN weather-icon, metric-symbol, alert-identity, and motion system. It includes hero/standard/compact condition artwork, day/night variants, subtle animated icon frames, dedicated severe-weather identities, a central icon resolver, and a procedural fallback renderer. Settings schema 22 preserved v0.3.3 Map Engine configuration and custom rundowns.
 
 ## Previous release: v0.3.3
 

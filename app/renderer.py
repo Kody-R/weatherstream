@@ -17,7 +17,10 @@ from app.events import EVENT_TYPES
 from app.network import apply_region_identity, region_for_location
 from app.radar import latlon_to_world
 from app.studio import active_sequence, bumper
+from app.story import classify_story, compose_story_sequence, STORY_PRIORITY
 from app.iconography import condition_icon as rwn_condition_icon, metric_icon as rwn_metric_icon, alert_icon as rwn_alert_icon, paste as paste_rwn_icon
+from app.event_identity import apply_identity_colors, identity as event_identity
+from app.broadcast_motion import resolved_transition, transition_seconds as motion_transition_seconds, entry_style as motion_entry_style, entry_seconds as motion_entry_seconds
 
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -218,12 +221,16 @@ class WeatherRenderer:
         self._context_cache: dict[tuple[str | None, str, int, int, int, int], tuple[dict[str, Any], dict[str, Any]]] = {}
         self._context_hits = 0
         self._context_misses = 0
+        self._story_state: dict[str, dict[str, Any]] = {}
 
     def _theme(self, settings: dict[str, Any]) -> dict[str, str]:
         colors = dict(THEMES.get(settings.get("theme", "local-90s"), THEMES["local-90s"]))
         accent = (settings.get("_branding_profile") or {}).get("accent_color")
         if accent: colors["accent"] = accent; colors["title"] = accent
-        return colors
+        # Dedicated v0.3.9 event desks deliberately override the ordinary station
+        # theme only on specialty/event channels. The everyday local service keeps
+        # the user's selected RWN theme even when the Story Engine spots a hazard.
+        return apply_identity_colors(colors, settings)
 
     def _visual(self, settings: dict[str, Any]) -> dict[str, Any]:
         return ((settings.get("presentation") or {}).get("visual_system") or {})
@@ -310,6 +317,10 @@ class WeatherRenderer:
         return "RIGHT NOW", desc
 
     def _paint_condition_overlay(self, img: Image.Image, p: dict[str, Any], settings: dict[str, Any]) -> None:
+        # Dedicated event desks own their background language. Do not mix the
+        # everyday condition overlay into warning/hydrology/heat desk motifs.
+        if event_identity(settings):
+            return
         if not self._visual(settings).get("condition_backgrounds", True):
             return
         cur = p.get("current") or {}
@@ -449,6 +460,51 @@ class WeatherRenderer:
             except Exception: pass
         return (min(vals),max(vals)) if vals else (None,None)
 
+    def _weather_story(self, settings: dict[str, Any], snapshot: dict[str, Any], primary: dict[str, Any] | None, now: float, *, stable: bool = True) -> dict[str, Any]:
+        story = classify_story(settings, snapshot, primary)
+        cfg = settings.get("story_engine") or {}
+        if not stable or not cfg.get("enabled", True):
+            return story
+        key = f"{settings.get('_channel_mode','local')}:{settings.get('_render_location_id') or settings.get('primary_location_id') or 'default'}"
+        hold_seconds = max(0, int(cfg.get("hold_minutes", 8))) * 60
+        with self._context_lock:
+            previous = self._story_state.get(key)
+            if previous:
+                old = previous.get("story") or {}
+                age = max(0.0, now - float(previous.get("changed_at") or 0))
+                old_priority = int(STORY_PRIORITY.get(str(old.get("id") or "quiet"), 0))
+                new_priority = int(STORY_PRIORITY.get(str(story.get("id") or "quiet"), 0))
+                # Hold only ordinary forecast stories. Official/higher-impact stories
+                # must be able to clear immediately when their triggering data clears.
+                if age < hold_seconds and old_priority < 70 and new_priority <= old_priority and old.get("id") != story.get("id"):
+                    held = copy.deepcopy(old)
+                    held["held"] = True
+                    held["held_seconds_remaining"] = int(hold_seconds - age)
+                    return held
+                if old.get("id") == story.get("id"):
+                    previous["story"] = copy.deepcopy(story)
+                    return story
+            self._story_state[key] = {"story": copy.deepcopy(story), "changed_at": now}
+        return story
+
+    def story_status(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+        now = now or dt.datetime.now().timestamp()
+        primary = self._primary(settings, snapshot) or {}
+        story = self._weather_story(settings, snapshot, primary, now)
+        cfg = settings.get("story_engine") or {}
+        sequence, sections = compose_story_sequence(
+            story, station_id=(settings.get("presentation") or {}).get("show_station_id", True),
+            story_brief=cfg.get("show_story_brief", True), include_context=cfg.get("include_context", True),
+            max_slides=int(cfg.get("max_slides", 13)),
+        )
+        channel_mode=str(settings.get("_channel_mode") or "local")
+        region_id=str((settings.get("_region") or {}).get("id") or "default")
+        studio_override=active_sequence(settings, region_id, channel_mode, self._local_datetime(snapshot, settings, now))
+        takeover=bool(self._takeover_alert(settings,snapshot))
+        directing=bool(cfg.get("enabled",True) and (settings.get("smart_programming") or {}).get("enabled",True) and channel_mode=="local" and not studio_override and not takeover)
+        override="severe_takeover" if takeover else "studio" if studio_override else "specialty_channel" if channel_mode!="local" else None
+        return {**story, "sequence": sequence, "sections": sections, "enabled": bool(cfg.get("enabled", True)), "directing": directing, "override": override}
+
     def _smart_wanted(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float) -> list[str]:
         pres = settings.get("presentation") or {}; smart = settings.get("smart_programming") or {}; dayparts = settings.get("dayparts") or {}
         if dayparts.get("enabled", True):
@@ -456,6 +512,17 @@ class WeatherRenderer:
             wanted = list(((dayparts.get("sequences") or {}).get(part)) or (pres.get("sequence") or []))
         else:
             wanted = list(pres.get("sequence") or [])
+        pool = set(pres.get("sequence") or wanted)
+        primary = self._primary(settings, snapshot) or {}; hourly = primary.get("hourly") or {}
+        story_cfg = settings.get("story_engine") or {}
+        story_directed = bool(smart.get("enabled", True) and story_cfg.get("enabled", True) and settings.get("_channel_mode", "local") == "local")
+        if story_directed:
+            story = self._weather_story(settings, snapshot, primary, now)
+            composed, _ = compose_story_sequence(
+                story, station_id=pres.get("show_station_id", True), story_brief=story_cfg.get("show_story_brief", True),
+                include_context=story_cfg.get("include_context", True), max_slides=int(story_cfg.get("max_slides", 13)),
+            )
+            wanted = [x for x in composed if x in pool or x in {"station_id", "story_brief"}]
 
         graphics=settings.get("forecast_graphics") or {}
         if not graphics.get("enabled", True):
@@ -466,7 +533,6 @@ class WeatherRenderer:
             if not graphics.get("rain_accumulation_enabled",True): wanted=[x for x in wanted if x != "rain_accumulation"]
         if not smart.get("enabled", True): return wanted
 
-        primary = self._primary(settings, snapshot) or {}; hourly = primary.get("hourly") or {}
         rain = self._max_next(hourly, "precipitation_probability", 12)
         rain_total = self._sum_next(hourly, "precipitation", 24)
         gust = self._max_next(hourly, "wind_gusts_10m", 12)
@@ -495,12 +561,12 @@ class WeatherRenderer:
         elif "spc_outlook" not in wanted:
             idx = wanted.index("radar_local") if "radar_local" in wanted else min(5, len(wanted)); wanted.insert(idx, "spc_outlook")
         if not (settings.get("history") or {}).get("enabled", True):
-            wanted = [x for x in wanted if x != "weather_history"]
+            wanted = [x for x in wanted if x not in {"weather_history","today_so_far","past_24_hours"}]
 
         # Forecast Graphics 2.0 turns the rundown into a simple weather story. We do
         # not delete user-selected graphics here; notable products are moved near the
         # top so the channel explains the important signal before the long-range recap.
-        if smart.get("smart_story_ordering", True):
+        if smart.get("smart_story_ordering", True) and not story_directed:
             def promote(item: str, anchor: str) -> None:
                 nonlocal wanted
                 if item not in wanted: return
@@ -524,7 +590,45 @@ class WeatherRenderer:
 
     def programming_status(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float | None = None) -> dict[str, Any]:
         now = now or dt.datetime.now().timestamp()
-        return {"daypart": self._daypart(settings, snapshot, now), "smart_enabled": bool((settings.get("smart_programming") or {}).get("enabled", True)), "sequence": [x for x,_ in self._sequence(settings, snapshot, now)]}
+        return {"daypart": self._daypart(settings, snapshot, now), "smart_enabled": bool((settings.get("smart_programming") or {}).get("enabled", True)), "story": self.story_status(settings, snapshot, now), "sequence": [x for x,_ in self._sequence(settings, snapshot, now)]}
+
+    def playout_status(self, location_id: str | None = None, channel_mode: str = "local", now: float | None = None) -> dict[str, Any]:
+        """Return the renderer's actual timeline position for Studio Control Room."""
+        now = float(now or dt.datetime.now().timestamp())
+        settings, snapshot = self._channel_context(location_id, channel_mode)
+        primary = self._primary(settings, snapshot)
+        if not primary:
+            return {"current_slide": "setup", "next_slide": None, "progress": 0.0, "elapsed_seconds": 0.0, "remaining_seconds": None, "duration_seconds": None, "sequence": [], "story": self.story_status(settings, snapshot, now), "severe_takeover": False}
+        seq, idx, name, progress, elapsed, duration = self._timeline(settings, snapshot, now)
+        next_name = seq[(idx + 1) % len(seq)][0] if seq else None
+        prev_name = seq[(idx - 1) % len(seq)][0] if seq else None
+        return {
+            "current_slide": name, "next_slide": next_name, "previous_slide": prev_name,
+            "index": idx, "progress": round(float(progress), 4),
+            "elapsed_seconds": round(float(elapsed), 2), "remaining_seconds": round(max(0.0, float(duration) - float(elapsed)), 2),
+            "duration_seconds": int(duration),
+            "sequence": [{"slide": slide, "duration_seconds": int(seconds)} for slide, seconds in seq],
+            "story": self.story_status(settings, snapshot, now),
+            "severe_takeover": bool(self._takeover_alert(settings, snapshot)),
+            "daypart": self._daypart(settings, snapshot, now),
+        }
+
+    def timeline_status(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+        """Expose the renderer timeline for Studio Control Room 2.0.
+
+        This uses the same cycle origin and sequence selection as render_channel(),
+        so LIVE/NEXT labels match what the renderer is actually producing.
+        """
+        now = now or dt.datetime.now().timestamp()
+        seq, idx, name, progress, elapsed, duration = self._timeline(settings, snapshot, now)
+        next_name, next_duration = seq[(idx + 1) % len(seq)]
+        return {
+            "current": name, "next": next_name, "index": idx, "count": len(seq),
+            "elapsed_seconds": round(elapsed, 2), "duration_seconds": duration,
+            "remaining_seconds": round(max(0.0, duration - elapsed), 2),
+            "progress": round(progress, 4), "next_duration_seconds": next_duration,
+            "sequence": [{"slide": slide, "duration_seconds": seconds} for slide, seconds in seq],
+        }
 
     def _sequence(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float | None = None):
         durations = settings.get("slides", {})
@@ -546,9 +650,10 @@ class WeatherRenderer:
             # programming block. The normal renderer timeline no longer swaps its
             # sequence merely because the clock is inside the scheduled trigger
             # window. This lets the block finish naturally even after that window.
-            wanted = self._smart_wanted(settings, snapshot, now if now is not None else dt.datetime.now().timestamp())
             region_id = str((settings.get("_region") or {}).get("id") or "default")
-            studio_sequence = active_sequence(settings, region_id, str(settings.get("_channel_mode") or "local"), self._local_datetime(snapshot, settings, now or dt.datetime.now().timestamp()))
+            channel_mode = str(settings.get("_channel_mode") or "local")
+            wanted = self._smart_wanted(settings, snapshot, now if now is not None else dt.datetime.now().timestamp())
+            studio_sequence = active_sequence(settings, region_id, channel_mode, self._local_datetime(snapshot, settings, now or dt.datetime.now().timestamp()))
             if studio_sequence:
                 wanted = studio_sequence
 
@@ -564,6 +669,10 @@ class WeatherRenderer:
                 seq.append((str(name), max(3, min(30, int(item.get("duration", 6)))))); continue
             if name == "station_id" and not pres.get("show_station_id", True):
                 continue
+            if name == "story_brief":
+                story_cfg=settings.get("story_engine") or {}
+                if not story_cfg.get("enabled",True) or not story_cfg.get("show_story_brief",True):
+                    continue
             if name in radar_name_to_view:
                 if not radar_cfg.get("enabled", True):
                     continue
@@ -578,6 +687,11 @@ class WeatherRenderer:
                 continue
             if name == "weather_history" and not (settings.get("history") or {}).get("enabled", True):
                 continue
+            local_data=settings.get("local_data") or {}
+            if name in {"today_so_far","past_24_hours"} and not (settings.get("history") or {}).get("enabled",True): continue
+            if name == "air_quality" and not (local_data.get("air_quality") or {}).get("enabled",True): continue
+            if name == "local_rivers" and not (local_data.get("rivers") or {}).get("enabled",True): continue
+            if name == "climate_context" and not (local_data.get("climate") or {}).get("enabled",True): continue
             fg = settings.get("forecast_graphics") or {}
             if name in {"day_ahead", "humidity_outlook", "wind_outlook", "rain_accumulation"} and not fg.get("enabled", True):
                 continue
@@ -618,9 +732,69 @@ class WeatherRenderer:
             cursor += duration
         return seq, 0, seq[0][0], 0.0, 0.0, seq[0][1]
 
+    def _paint_event_background(self, img: Image.Image, c: dict[str, str], settings: dict[str, Any], now: float) -> None:
+        """Paint the approved v0.3.9 desk motif without replacing map/data content.
+
+        The patterns are intentionally restrained: they establish channel identity
+        at a glance while preserving high-contrast broadcast readability.
+        """
+        draw = ImageDraw.Draw(img)
+        w, h = img.size
+        key = str(c.get("event_key") or "")
+        # dark-to-light vertical base using the identity palette
+        def rgb(hexv: str) -> tuple[int, int, int]:
+            v=hexv.lstrip("#"); return tuple(int(v[i:i+2],16) for i in (0,2,4))
+        a=rgb(str(c.get("bg") or "#061523")); b=rgb(str(c.get("panel2") or "#0b2f63"))
+        for y in range(h):
+            t=y/max(1,h-1); mix=min(0.72,0.12+t*0.48)
+            col=tuple(int(a[i]*(1-mix)+b[i]*mix) for i in range(3))
+            draw.line((0,y,w,y),fill=col)
+        if not (settings.get("event_identity") or {}).get("background_motifs", True):
+            return
+        phase=int(now*8)%120 if (settings.get("presentation") or {}).get("background_motion",True) else 0
+        if key == "severe":
+            for x in range(-240+phase,w+240,150):
+                draw.polygon([(x,88),(x+55,88),(x-125,h-86),(x-180,h-86)], fill="#260d14")
+            for y in range(118,h-86,58): draw.line((0,y,w,y),fill="#3d111a",width=1)
+            draw.rectangle((0,88,14,h-86),fill=c["accent"])
+        elif key == "flood":
+            for y in range(135,h-86,52):
+                pts=[]
+                for x in range(-20,w+20,20):
+                    yy=y+int(math.sin((x+phase)/85)*8); pts.append((x,yy))
+                draw.line(pts,fill="#0f5b72",width=2)
+            for x in range(0,w,96): draw.line((x,105,x,h-86),fill="#0a3b4c",width=1)
+        elif key == "winter":
+            for x in range(-160+phase,w+160,110): draw.line((x,88,x-210,h-86),fill="#214d83",width=2)
+            for x,y in ((150,150),(330,260),(590,145),(815,330),(1035,180),(1170,440),(430,470)):
+                r=4; draw.ellipse((x-r,y-r,x+r,y+r),fill="#bcecff")
+        elif key == "heat":
+            # broadcast heat shimmer: broad bands and a restrained sun halo
+            for y in range(135,h-86,58):
+                pts=[]
+                for x in range(-20,w+20,24): pts.append((x,y+int(math.sin((x+phase)/70)*6)))
+                draw.line(pts,fill="#7d2810",width=2)
+            for r,alpha in ((260,1),(185,1),(120,1)):
+                draw.ellipse((w-r-15,70-r//4,w+35,70+r*2),outline="#a43a12",width=3)
+        elif key == "wildfire":
+            for band in range(5):
+                y=145+band*95
+                pts=[]
+                for x in range(-50,w+50,35): pts.append((x,y+int(math.sin((x+phase+band*35)/100)*18)))
+                draw.line(pts,fill="#6d421b",width=9)
+            draw.rectangle((0,88,w,96),fill=c["accent"])
+        elif key == "tropical":
+            cx,cy=w-175,245
+            for r in (85,145,215,290): draw.arc((cx-r,cy-r,cx+r,cy+r),15,315,fill="#12649b",width=2)
+            for y in range(120,h-86,70): draw.line((0,y,w,y),fill="#0b416e",width=1)
+            for x in range(0,w,100): draw.line((x,88,x,h-86),fill="#09385f",width=1)
+
     def _paint_background(self, img: Image.Image, c: dict[str, str], settings: dict[str, Any], now: float) -> None:
         draw = ImageDraw.Draw(img)
         w, h = img.size
+        if c.get("event_key"):
+            self._paint_event_background(img,c,settings,now)
+            return
         theme = settings.get("theme", "local-90s")
         if theme == "classic-blue":
             for y in range(h):
@@ -675,6 +849,7 @@ class WeatherRenderer:
         if name == "local8_intro": self._draw_local8_intro(draw, w, h, settings, primary, c)
         elif name == "station_id": self._draw_station_id(draw, w, h, settings, primary, c, now)
         elif name == "current": self._draw_current(draw, w, h, settings, primary, c)
+        elif name == "story_brief": self._draw_story_brief(draw, w, h, settings, snapshot, primary, c, now)
         elif name == "today": self._draw_today(draw, w, h, settings, primary, c)
         elif name == "nws_forecast": self._draw_nws_forecast(draw, w, h, settings, primary, c)
         elif name == "day_ahead": self._draw_day_ahead(draw, w, h, settings, primary, c)
@@ -700,6 +875,11 @@ class WeatherRenderer:
         elif name in {"map_satellite", "map_lightning"}: self._draw_goes_product(img, ImageDraw.Draw(img), w, h, settings, c, "satellite" if name == "map_satellite" else "lightning")
         elif name.startswith("bumper:"): self._draw_studio_bumper(draw, w, h, settings, name.split(":", 1)[1], c)
         elif name == "condition_focus": self._draw_condition_focus(draw, w, h, settings, primary, c)
+        elif name == "today_so_far": self._draw_today_so_far(draw, w, h, settings, primary, c)
+        elif name == "past_24_hours": self._draw_past_24_hours(draw, w, h, settings, primary, c)
+        elif name == "air_quality": self._draw_air_quality(draw, w, h, settings, primary, c)
+        elif name == "local_rivers": self._draw_local_rivers(draw, w, h, settings, primary, c)
+        elif name == "climate_context": self._draw_climate_context(draw, w, h, settings, primary, c)
         elif name == "weather_history": self._draw_weather_history(draw, w, h, settings, primary, c)
         elif name == "seven_day": self._draw_seven_day(draw, w, h, settings, primary, c)
         elif name in {"radar", "radar_local", "radar_regional", "radar_wide", "alert_radar"}:
@@ -882,20 +1062,27 @@ class WeatherRenderer:
         seq, idx, name, progress, elapsed, duration = self._timeline(settings, snapshot, now)
         current = self._render_slide(name, settings, snapshot, primary, now, progress)
         pres = settings.get("presentation", {})
-        kind = pres.get("transition", "crossfade")
-        transition = min(float(pres.get("transition_seconds", 0.75)), duration / 3)
+        desk = event_identity(settings) or {}
+        urgent = bool(self._takeover_alert(settings, snapshot))
+        kind = resolved_transition(settings, str(desk.get("key") or "") or None)
+        transition = min(motion_transition_seconds(settings, urgent=urgent), duration / 3)
+        # A short entry settle gives static forecast boards some motion even after
+        # the transition has completed. Emergency takeovers deliberately skip it.
+        entry = 0.0 if urgent else min(motion_entry_seconds(settings), duration / 4)
+        if entry > 0 and elapsed < entry:
+            current = self._apply_entry_motion(current, max(0.0, min(1.0, elapsed / entry)), motion_entry_style(settings, str(desk.get("key") or "") or None), settings)
         out = current
         if kind != "cut" and transition > 0:
             if elapsed < transition:
                 prev_name, _ = seq[(idx-1) % len(seq)]
                 prev = self._render_slide(prev_name, settings, snapshot, primary, now, 1.0)
                 alpha = max(0.0, min(1.0, elapsed / transition))
-                out = self._transition(prev, current, alpha, kind)
+                out = self._transition(prev, current, alpha, kind, settings=settings)
             elif duration - elapsed < transition:
                 next_name, _ = seq[(idx+1) % len(seq)]
                 nxt = self._render_slide(next_name, settings, snapshot, primary, now, 0.0)
                 alpha = max(0.0, min(1.0, (transition - (duration-elapsed)) / transition))
-                out = self._transition(current, nxt, alpha, kind)
+                out = self._transition(current, nxt, alpha, kind, settings=settings)
         return self._apply_retro_effects(out, settings, now)
 
     def render(self, now: float | None = None) -> Image.Image:
@@ -907,7 +1094,7 @@ class WeatherRenderer:
         if not primary:
             dw, dh = self._design_dimensions(settings)
             out = Image.new("RGB", (dw,dh), c["bg"]); self._paint_background(out,c,settings,dt.datetime.now().timestamp()); d=ImageDraw.Draw(out); self._draw_setup(d,dw,dh,settings,c); self._draw_footer(d,dw,dh,settings,snapshot,c,dt.datetime.now().timestamp()); return self._scale_frame(out, settings)
-        valid = {"station_id","current","condition_focus","today","nws_forecast","day_ahead","temperature_trend","hourly","humidity_outlook","wind_outlook","precipitation","rain_accumulation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar","event_summary","map_engine","map_satellite","map_lightning","spc_map","spc_hazards","surface_map","qpf_map","hazard_map"}
+        valid = {"station_id","current","story_brief","condition_focus","today","nws_forecast","day_ahead","temperature_trend","hourly","humidity_outlook","wind_outlook","precipitation","rain_accumulation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","today_so_far","past_24_hours","air_quality","local_rivers","climate_context","weather_history","almanac","alert","alert_radar","event_summary","map_engine","map_satellite","map_lightning","spc_map","spc_hazards","surface_map","qpf_map","hazard_map"}
         if slide_name not in valid and not slide_name.startswith("bumper:"): slide_name = "current"
         snap = snapshot
         if test_alert:
@@ -926,9 +1113,123 @@ class WeatherRenderer:
         bucket = int(round(max(0.0, min(1.0, alpha)) * 64))
         return _cached_pattern_mask(w, h, bucket, max(1, block))
 
-    def _transition(self, a: Image.Image, b: Image.Image, alpha: float, kind: str) -> Image.Image:
+    def _apply_entry_motion(self, frame: Image.Image, alpha: float, style: str, settings: dict[str, Any]) -> Image.Image:
+        """Apply a short whole-frame settle after a transition.
+
+        This intentionally remains subtle; weather data must stay readable and the
+        animation cannot change the meaning or timing of a forecast graphic.
+        """
+        alpha=max(0.0,min(1.0,alpha))
+        if style in {"none","cut"} or alpha >= 0.999:
+            return frame
+        w,h=frame.size
+        bg=(0,0,0)
+        if style == "snap":
+            # Small scale settle for high-impact desks.
+            scale=1.035-0.035*alpha
+            nw,nh=max(w,int(w*scale)),max(h,int(h*scale))
+            z=frame.resize((nw,nh),Image.Resampling.BICUBIC)
+            left=(nw-w)//2; top=(nh-h)//2
+            out=z.crop((left,top,left+w,top+h))
+            return ImageEnhance.Brightness(out).enhance(0.88+0.12*alpha)
+        if style == "glide":
+            dx=int((1-alpha)*34)
+            out=Image.new("RGB",(w,h),bg); out.paste(frame,(dx,0))
+            return Image.blend(Image.new("RGB",(w,h),bg),out,0.76+0.24*alpha)
+        if style == "soft":
+            blur=max(0.0,(1-alpha)*2.5)
+            out=frame.filter(ImageFilter.GaussianBlur(radius=blur)) if blur else frame
+            return ImageEnhance.Brightness(out).enhance(0.82+0.18*alpha)
+        # Default RWN broadcast settle: 18px vertical lift + quick fade.
+        dy=int((1-alpha)*18); out=Image.new("RGB",(w,h),bg); out.paste(frame,(0,dy))
+        return Image.blend(Image.new("RGB",(w,h),bg),out,0.82+0.18*alpha)
+
+    def _transition(self, a: Image.Image, b: Image.Image, alpha: float, kind: str, settings: dict[str, Any] | None = None) -> Image.Image:
         alpha = max(0.0, min(1.0, alpha))
         w, h = a.size
+        settings = settings or {}
+        if kind == "rwn_wipe":
+            # Network signature: clean two-edge wipe plus the RWN bug riding the
+            # transition band. It is intentionally brief and never used for an
+            # emergency takeover.
+            out = a.copy(); edge = int(w * alpha)
+            if edge > 0: out.paste(b.crop((0, 0, edge, h)), (0, 0))
+            if 0 < edge < w:
+                d = ImageDraw.Draw(out, "RGBA")
+                d.rectangle((max(0, edge-18), 0, min(w, edge+8), h), fill=(12,72,150,150))
+                d.rectangle((max(0, edge-5), 0, min(w, edge+5), h), fill=(230,248,255,235))
+                try:
+                    logo=self._load_logo(settings)
+                    if logo is not None:
+                        lw=132; lh=max(1,int(logo.height*(lw/logo.width)))
+                        bug=logo.resize((lw,lh),Image.Resampling.LANCZOS)
+                        bx=max(-lw//2,min(w-lw//2,edge-lw//2)); by=max(12,(h-lh)//2)
+                        out.paste(bug,(bx,by),bug)
+                except Exception:
+                    pass
+            return out
+        if kind == "panel_push":
+            edge = int(w * alpha); out = Image.new("RGB", (w, h), "black")
+            if edge < w: out.paste(a.crop((edge,0,w,h)), (0,0))
+            if edge > 0: out.paste(b.crop((0,0,edge,h)), (w-edge,0))
+            d=ImageDraw.Draw(out,"RGBA")
+            x=max(0,min(w-1,w-edge)); d.rectangle((max(0,x-10),0,min(w,x+10),h),fill=(255,255,255,36))
+            return out
+        if kind == "angular_wipe":
+            # Severe: fast diagonal warning wedge.
+            edge=int((w+220)*alpha)-220
+            mask=Image.new("L",(w,h),0); md=ImageDraw.Draw(mask)
+            md.polygon([(0,0),(edge,0),(edge-180,h),(0,h)],fill=255)
+            out=Image.composite(b,a,mask); d=ImageDraw.Draw(out,"RGBA")
+            if -180 < edge < w+180:
+                d.polygon([(edge-16,0),(edge+10,0),(edge-170,h),(edge-196,h)],fill=(255,49,61,210))
+                d.polygon([(edge+10,0),(edge+20,0),(edge-160,h),(edge-170,h)],fill=(255,157,31,210))
+            return out
+        if kind == "waterline_wipe":
+            # Flood: horizontal waterline with a moving sinusoidal edge. The mask
+            # is a polygon rather than a per-pixel loop so it remains cheap at 1080p.
+            mask=Image.new("L",(w,h),0); md=ImageDraw.Draw(mask); base=int(w*alpha)
+            pts=[(max(0,min(w,base+int(20*math.sin(y/34.0+alpha*8.0)))),y) for y in range(0,h+8,8)]
+            poly=[(0,0),*pts,(0,h)]
+            md.polygon(poly,fill=255)
+            out=Image.composite(b,a,mask); d=ImageDraw.Draw(out,"RGBA")
+            if len(pts)>1: d.line(pts,fill=(34,200,239,220),width=5)
+            return out
+        if kind == "ice_shards":
+            # Winter: staggered crystalline diagonal panes.
+            out=a.copy(); shards=9; sw=max(1,w//shards)
+            for i in range(shards):
+                local=max(0.0,min(1.0,alpha*1.55-i*0.055)); reveal=int(h*local)
+                if reveal<=0: continue
+                x0=i*sw; x1=w if i==shards-1 else min(w,x0+sw+3)
+                out.paste(b.crop((x0,0,x1,reveal)),(x0,0))
+                if reveal<h: ImageDraw.Draw(out,"RGBA").line((x0,reveal,x1,reveal),fill=(201,242,255,150),width=3)
+            return out
+        if kind == "heatwave":
+            # Heat: crossfade plus restrained horizontal shimmer; no psychedelic distortion.
+            base=Image.blend(a,b,alpha); amp=int(9*math.sin(math.pi*alpha))
+            if amp<=0: return base
+            out=Image.new("RGB",(w,h))
+            band=10
+            for y in range(0,h,band):
+                y1=min(h,y+band); dx=int(math.sin(y/25.0+alpha*9.0)*amp)
+                row=base.crop((0,y,w,y1)); shifted=Image.new("RGB",(w,y1-y),(42,13,7)); shifted.paste(row,(dx,0)); out.paste(shifted,(0,y))
+            return out
+        if kind == "smoke_dissolve":
+            # Wildfire: soft deterministic dissolve using blurred noise.
+            bucket=max(0,min(64,int(round(alpha*64))))
+            mask=_cached_pattern_mask(w,h,bucket,28).filter(ImageFilter.GaussianBlur(radius=12))
+            return Image.composite(b,a,mask)
+        if kind == "radar_sweep":
+            # Tropical: radial sweep rotating clockwise around the screen center.
+            mask=Image.new("L",(w,h),0); md=ImageDraw.Draw(mask); cx,cy=w//2,h//2; r=int(math.hypot(w,h))
+            start=-90; end=start+alpha*360
+            md.pieslice((cx-r,cy-r,cx+r,cy+r),start=start,end=end,fill=255)
+            out=Image.composite(b,a,mask)
+            if 0.01 < alpha < .99:
+                ang=math.radians(end); ex=cx+int(math.cos(ang)*r); ey=cy+int(math.sin(ang)*r)
+                ImageDraw.Draw(out,"RGBA").line((cx,cy,ex,ey),fill=(33,199,255,190),width=5)
+            return out
         if kind == "wipe":
             out = a.copy(); edge = int(w * alpha)
             if edge > 0: out.paste(b.crop((0, 0, edge, h)), (0, 0))
@@ -1044,7 +1345,19 @@ class WeatherRenderer:
 
     def _header(self, draw, w, title, subtitle, c):
         style = c.get("style", "classic")
-        if style == "terminal80":
+        if style == "event":
+            # Dedicated desk package: accent cap, compact RWN desk bug, strong title
+            # and a secondary accent that differentiates each event identity.
+            draw.rectangle((0,0,w,88),fill=c["panel2"])
+            draw.rectangle((0,0,w,7),fill=c["accent"])
+            draw.rectangle((20,17,116,70),fill=c["accent"])
+            draw.text((68,43),"RWN",font=font(23,bold=True),fill="#ffffff",anchor="mm")
+            draw.text((134,13),str(c.get("event_desk") or "RWN EVENT DESK"),font=font(12,bold=True,mono=True),fill=c.get("accent2",c["accent"]))
+            draw.text((134,31),title.upper(),font=font(35,bold=True),fill=c["title"])
+            draw.text((w-28,31),subtitle.upper(),font=font(16,bold=True,mono=True),fill=c["muted"],anchor="ra")
+            draw.text((w-28,57),str(c.get("event_slug") or "DEDICATED WEATHER COVERAGE"),font=font(11,bold=True,mono=True),fill=c.get("accent2",c["accent"]),anchor="ra")
+            draw.line((0,86,w,86),fill=c.get("accent2",c["accent"]),width=2)
+        elif style == "terminal80":
             draw.rectangle((0, 0, w, 88), fill=c["panel2"])
             draw.rectangle((0, 0, 18, 88), fill=c["accent"])
             draw.line((18, 86, w, 86), fill=c["title"], width=2)
@@ -1334,12 +1647,74 @@ class WeatherRenderer:
         draw.text((w//2, 402), "and add at least one U.S. ZIP code.", font=font(30), fill=c["text"], anchor="mm")
         draw.text((w//2, 482), "http://SERVER-IP:8787/admin", font=font(30, bold=True, mono=True), fill=c["muted"], anchor="mm")
 
+    def _draw_story_brief(self, draw, w, h, settings, snapshot, p, c, now):
+        loc = p.get("location") or {}
+        story = self._weather_story(settings, snapshot, p, now)
+        title = str(story.get("title") or "Local Weather Story").upper()
+        reason = str(story.get("reason") or "Current local conditions and forecast")
+        self._header(draw, w, "The Weather Story", location_label(loc), c)
+        # Large identity panel
+        round_rect(draw, (72, 142, w-72, 360), 18, c["panel2"], outline=c["accent"], width=3)
+        draw.text((104, 182), "RWN WEATHER STORY", font=font(17, bold=True, mono=True), fill=c["muted"])
+        size = 49 if len(title) <= 22 else 39
+        draw.text((104, 224), title, font=font(size, bold=True), fill=c["accent"])
+        wrapped = textwrap.wrap(reason, width=62)[:2]
+        for i, line in enumerate(wrapped):
+            draw.text((108, 294+i*28), line, font=font(19, bold=(i==0)), fill=c["text"])
+
+        # Signal cards: concise evidence behind the director's selection.
+        signals = [str(x) for x in (story.get("signals") or []) if str(x).strip()][:3]
+        metrics = story.get("metrics") or {}; sid=str(story.get("id") or "quiet")
+        extras=[]
+        if sid in {"rain","storms","severe","flood"}:
+            extras=[f"Peak rain chance {metrics.get('rain_probability_12h',0):.0f}%",f"Peak gust {metrics.get('peak_gust_mph',0):.0f} mph"]
+        elif sid == "heat": extras=[f"Peak heat {metrics.get('peak_heat_f') or 0:.0f}°",f"AQI {metrics.get('aqi') or 0:.0f}"]
+        elif sid == "wind": extras=[f"Peak gust {metrics.get('peak_gust_mph',0):.0f} mph",f"Rain chance {metrics.get('rain_probability_12h',0):.0f}%"]
+        elif sid == "air_quality": extras=[f"AQI {metrics.get('aqi') or 0:.0f}",f"Peak gust {metrics.get('peak_gust_mph',0):.0f} mph"]
+        elif sid in {"cold","winter"}: extras=[f"Low next 24h {metrics.get('low_24h_f') or 0:.0f}°",f"Peak gust {metrics.get('peak_gust_mph',0):.0f} mph"]
+        for extra in extras:
+            if len(signals)>=3: break
+            if extra not in signals: signals.append(extra)
+        if not signals:
+            signals = [f"Rain next 12h {metrics.get('rain_probability_12h',0):.0f}%",f"Peak gust {metrics.get('peak_gust_mph',0):.0f} mph","No dominant hazard signal"]
+        x0, y0, gap = 72, 392, 18
+        card_w = (w-144-gap*2)//3
+        for i, signal in enumerate(signals[:3]):
+            x = x0 + i*(card_w+gap)
+            round_rect(draw, (x, y0, x+card_w, 492), 13, c["panel"], outline=c["muted"], width=2)
+            draw.text((x+18, y0+20), f"SIGNAL {i+1}", font=font(11, bold=True, mono=True), fill=c["muted"])
+            lines = textwrap.wrap(signal, width=28)[:2]
+            for j, line in enumerate(lines):
+                draw.text((x+18, y0+49+j*24), line, font=font(17, bold=True), fill=c["text"])
+
+        sections = story.get("sections") or {}
+        labels=[]
+        for key in ("now", "next", "later", "context"):
+            slides = sections.get(key) or []
+            if slides:
+                pretty = str(slides[0]).replace("_", " ").upper()
+                labels.append((key.upper(), pretty))
+        if labels:
+            cell=(w-144)/len(labels)
+            for i,(label,value) in enumerate(labels):
+                x=72+i*cell
+                if i: draw.line((int(x),520,int(x),588),fill=c["panel"],width=2)
+                draw.text((int(x)+14,530),label,font=font(12,bold=True,mono=True),fill=c["muted"])
+                draw.text((int(x)+14,556),value[:24],font=font(16,bold=True),fill=c["text"])
+
     def _draw_current(self, draw, w, h, settings, p, c):
         loc = p["location"]
         cur = p.get("current", {})
         daily = p.get("daily", {})
         self._header(draw, w, "Current Conditions", location_label(loc), c)
-        self._source_badge(draw, p, c, settings)
+        obs = p.get("observation") or {}
+        badge_p = dict(p)
+        obs_cfg = ((settings.get("local_data") or {}).get("observations") or {})
+        use_observed = obs_cfg.get("enabled", True) and obs_cfg.get("use_for_current", True) and bool(cur.get("station_id"))
+        if use_observed and obs.get("timestamp"):
+            badge_p["fetched_at"] = obs.get("timestamp")
+        source = f"NWS OBSERVED • {obs.get('station_id')}" if use_observed and obs.get("station_id") else "OPEN-METEO MODEL"
+        self._source_badge(draw, badge_p, c, settings, source=source)
 
         # Hero condition panel.
         round_rect(draw, (54, 132, 706, 486), 20, c["panel2"], outline=c["muted"], width=2)
@@ -1352,13 +1727,17 @@ class WeatherRenderer:
         draw.text((104, 430), story, font=font(17, bold=True, mono=True), fill=c["accent"])
         draw.text((660, 430), story_detail, font=font(18, bold=True), fill=c["text"], anchor="ra")
 
-        dew = dew_point_f(cur.get("temperature_2m"), cur.get("relative_humidity_2m"))
+        dew = cur.get("dewpoint_f")
+        if dew is None:
+            dew = dew_point_f(cur.get("temperature_2m"), cur.get("relative_humidity_2m"))
         wind = f"{cur.get('wind_cardinal', '--')} {n(cur.get('wind_speed_10m'), 0, ' mph')}"
         self._metric_tile(draw, (738, 132, 974, 286), "Humidity", n(cur.get("relative_humidity_2m"), 0, "%"), c, f"Dew point {n(dew,0,'°')}", icon_name="humidity", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
         self._metric_tile(draw, (990, 132, 1226, 286), "Wind", wind, c, f"Gusts {n(cur.get('wind_gusts_10m'),0,' mph')}", icon_name="wind", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
         self._metric_tile(draw, (738, 302, 974, 456), "Pressure", pressure_inhg(cur.get("surface_pressure")), c, icon_name="pressure", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
         cloud = n(cur.get("cloud_cover"), 0, "%")
-        self._metric_tile(draw, (990, 302, 1226, 456), "Cloud Cover", cloud, c, icon_name="cloud_cover", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
+        visibility = n(cur.get("visibility_miles"), 1, " mi") if cur.get("visibility_miles") is not None else cloud
+        detail = f"Cloud cover {cloud}" if cur.get("visibility_miles") is not None else "Model cloud estimate"
+        self._metric_tile(draw, (990, 302, 1226, 456), "Visibility" if cur.get("visibility_miles") is not None else "Cloud Cover", visibility, c, detail, icon_name="visibility" if cur.get("visibility_miles") is not None else "cloud_cover", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
 
         highs = daily.get("temperature_2m_max") or []
         lows = daily.get("temperature_2m_min") or []
@@ -1861,6 +2240,163 @@ class WeatherRenderer:
             if icons_on and paste_rwn_icon(getattr(draw,"_image",None),rwn_metric_icon(metric,32),x+16,472): label_x=x+55
             draw.text((label_x,480),lab,font=font(16,bold=True,mono=True),fill=c["muted"]); draw.text((x+cw-18,530),val,font=font(28,bold=True),fill=c["text"],anchor="rm")
 
+    def _local_time_text(self, value: Any, timezone_name: str | None = None) -> str:
+        if not value:
+            return "--"
+        try:
+            stamp = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=dt.timezone.utc)
+            try:
+                stamp = stamp.astimezone(ZoneInfo(str(timezone_name or "UTC")))
+            except Exception:
+                stamp = stamp.astimezone()
+            return stamp.strftime("%I:%M %p").lstrip("0")
+        except Exception:
+            return "--"
+
+    def _draw_today_so_far(self, draw, w, h, settings, p, c):
+        loc=p.get("location") or {}; loc_id=loc.get("id") or settings.get("primary_location_id")
+        summary=self.history_store.today_summary(loc_id,loc.get("timezone")) if self.history_store and loc_id else {"samples":0}
+        self._header(draw,w,"TODAY SO FAR",location_label(loc),c)
+        obs=p.get("observation") or {}; source=f"NWS OBSERVED • {obs.get('station_id')}" if obs.get("station_id") else "LOCAL HISTORY"
+        badge=dict(p); badge["fetched_at"]=obs.get("timestamp") or p.get("fetched_at"); self._source_badge(draw,badge,c,settings,source=source)
+        if not summary.get("samples"):
+            draw.text((w//2,300),"TODAY'S OBSERVATIONS ARE BUILDING",font=font(38,bold=True),fill=c["accent"],anchor="mm")
+            draw.text((w//2,354),"This screen fills automatically as real observations are collected.",font=font(20),fill=c["text"],anchor="mm"); return
+        daily=p.get("daily") or {}; rain=(daily.get("precipitation_sum") or [None])[0]
+        cards=[
+            ("HIGH",n(summary.get("high"),0,"°"),self._local_time_text(summary.get("high_time"),loc.get("timezone")),"temperature"),
+            ("LOW",n(summary.get("low"),0,"°"),self._local_time_text(summary.get("low_time"),loc.get("timezone")),"temperature"),
+            ("PEAK GUST",n(summary.get("max_gust"),0," mph"),self._local_time_text(summary.get("max_gust_time"),loc.get("timezone")),"gust"),
+            ("FORECAST RAIN",n(rain,2,' in'),"Forecast-day accumulation","rainfall"),
+        ]
+        cw=274
+        for i,(lab,val,detail,metric) in enumerate(cards):
+            x=54+i*(cw+18); self._metric_tile(draw,(x,142,x+cw,306),lab,val,c,detail,icon_name=metric,icon_enabled=(settings.get("icon_system") or {}).get("metric_icons",True))
+        round_rect(draw,(54,334,1226,492),18,c["panel2"],outline=c["muted"],width=2)
+        change=summary.get("temperature_change"); pdelta=summary.get("pressure_delta_hpa")
+        change_text="--" if change is None else f"{float(change):+.0f}°"
+        ptext="--" if pdelta is None else f"{float(pdelta):+.1f} hPa"
+        cols=[("TEMPERATURE CHANGE",change_text,"Since first observation today"),("PRESSURE",safe(summary.get("pressure_trend"),"--"),ptext),("OBSERVATIONS",str(summary.get("samples",0)),"Stored locally today")]
+        cell=1172//3
+        for i,(lab,val,detail) in enumerate(cols):
+            x=54+i*cell
+            if i: draw.line((x,352,x,472),fill=c["panel"],width=2)
+            draw.text((x+cell//2,365),lab,font=font(14,bold=True,mono=True),fill=c["muted"],anchor="mm")
+            draw.text((x+cell//2,414),val,font=font(34,bold=True),fill=c["accent"] if i<2 else c["text"],anchor="mm")
+            draw.text((x+cell//2,456),detail,font=font(13,mono=True),fill=c["text"],anchor="mm")
+        draw.text((w//2,540),"OBSERVATIONAL SUMMARY • HIGH/LOW/GUST FROM LOCAL HISTORY",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_past_24_hours(self, draw, w, h, settings, p, c):
+        loc=p.get("location") or {}; loc_id=loc.get("id") or settings.get("primary_location_id")
+        rows=self.history_store.recent(loc_id,24,1000) if self.history_store and loc_id else []
+        summary=self.history_store.summary(loc_id,24) if self.history_store and loc_id else {"samples":0}
+        self._header(draw,w,"PAST 24 HOURS",location_label(loc),c)
+        if len(rows)<2:
+            draw.text((w//2,310),"24-HOUR HISTORY IS BUILDING",font=font(40,bold=True),fill=c["accent"],anchor="mm")
+            draw.text((w//2,362),"Real station observations will appear here as they accumulate.",font=font(21),fill=c["text"],anchor="mm"); return
+        graph=(74,146,1206,430); round_rect(draw,graph,18,c["panel2"],outline=c["muted"],width=2)
+        temp_rows=[r for r in rows if r.get("temperature") is not None]
+        pressure_rows=[r for r in rows if r.get("pressure_hpa") is not None]
+        if temp_rows:
+            vals=[float(r["temperature"]) for r in temp_rows]; lo=min(vals)-2; hi=max(vals)+2; pts=[]
+            for i,r in enumerate(temp_rows):
+                x=graph[0]+36+(graph[2]-graph[0]-72)*(i/max(1,len(temp_rows)-1)); y=graph[3]-38-(float(r["temperature"])-lo)/max(1,hi-lo)*(graph[3]-graph[1]-76); pts.append((x,y))
+            if len(pts)>1: draw.line(pts,fill=c["accent"],width=5,joint="curve")
+            draw.text((graph[0]+18,graph[1]+18),f"TEMP  {min(vals):.0f}°–{max(vals):.0f}°",font=font(14,bold=True,mono=True),fill=c["accent"])
+        if pressure_rows:
+            vals=[float(r["pressure_hpa"]) for r in pressure_rows]; lo=min(vals)-0.5; hi=max(vals)+0.5; pts=[]
+            for i,r in enumerate(pressure_rows):
+                x=graph[0]+36+(graph[2]-graph[0]-72)*(i/max(1,len(pressure_rows)-1)); y=graph[3]-38-(float(r["pressure_hpa"])-lo)/max(0.1,hi-lo)*(graph[3]-graph[1]-76); pts.append((x,y))
+            if len(pts)>1: draw.line(pts,fill=c["text"],width=2)
+            draw.text((graph[2]-18,graph[1]+18),f"PRESSURE {min(vals):.0f}–{max(vals):.0f} hPa",font=font(13,bold=True,mono=True),fill=c["text"],anchor="ra")
+        cards=[("HIGH",n(summary.get("high"),0,"°")),("LOW",n(summary.get("low"),0,"°")),("MAX GUST",n(summary.get("max_gust"),0," mph")),("TEMP CHANGE",("--" if summary.get("temperature_change") is None else f"{float(summary['temperature_change']):+.0f}°")),("PRESSURE",safe(summary.get("pressure_trend"),"--"))]
+        cw=1170//5
+        for i,(lab,val) in enumerate(cards):
+            x=55+i*cw; draw.text((x+cw//2,477),lab,font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm"); draw.text((x+cw//2,522),val,font=font(25,bold=True),fill=c["text"],anchor="mm")
+        draw.text((w//2,568),f"{summary.get('samples',0)} OBSERVATIONS • GOLD = TEMPERATURE • WHITE = PRESSURE",font=font(13,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_air_quality(self, draw, w, h, settings, p, c):
+        aq=p.get("air_quality") or {}; loc=p.get("location") or {}
+        self._header(draw,w,"AIR QUALITY",location_label(loc),c)
+        badge=dict(p); badge["fetched_at"]=aq.get("fetched_at"); self._source_badge(draw,badge,c,settings,source=str(aq.get("source") or "AIR QUALITY"))
+        aqi=aq.get("aqi"); category=str(aq.get("category") or "UNAVAILABLE")
+        if aqi is None:
+            draw.text((w//2,310),"AIR QUALITY TEMPORARILY UNAVAILABLE",font=font(38,bold=True),fill=c["accent"],anchor="mm"); return
+        try: av=float(aqi)
+        except Exception: av=0
+        aqcol="#55b96b" if av<=50 else "#d7c83f" if av<=100 else "#e48b35" if av<=150 else "#cf4b54" if av<=200 else "#914da3" if av<=300 else "#7a303c"
+        round_rect(draw,(72,142,540,510),24,c["panel2"],outline=aqcol,width=4)
+        draw.text((306,194),"CURRENT US AQI",font=font(20,bold=True,mono=True),fill=c["muted"],anchor="mm")
+        draw.ellipse((166,228,446,508),fill=aqcol,outline=c["text"],width=4)
+        draw.text((306,333),f"{av:.0f}",font=font(92,bold=True),fill="#ffffff",anchor="mm")
+        size=22 if len(category)<20 else 16
+        draw.text((306,414),category,font=font(size,bold=True,mono=True),fill="#ffffff",anchor="mm")
+        metrics=[("PRIMARY",str(aq.get("primary_pollutant") or "--")),("PM2.5",n(aq.get("pm2_5"),1," µg/m³")),("PM10",n(aq.get("pm10"),1," µg/m³")),("OZONE",n(aq.get("ozone"),1," µg/m³"))]
+        for i,(lab,val) in enumerate(metrics):
+            y=154+i*92; round_rect(draw,(590,y,1206,y+72),12,c["panel"],outline=c["panel2"],width=2); draw.text((612,y+15),lab,font=font(14,bold=True,mono=True),fill=c["muted"]); draw.text((1180,y+36),val,font=font(25,bold=True),fill=c["text"],anchor="rm")
+        draw.text((w//2,557),"MODELED AIR-QUALITY GUIDANCE • NOT A SUBSTITUTE FOR LOCAL HEALTH ADVISORIES",font=font(12,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_local_rivers(self, draw, w, h, settings, p, c):
+        river=p.get("rivers") or {}; gauges=river.get("gauges") or []; loc=p.get("location") or {}
+        self._header(draw,w,"LOCAL RIVERS & STREAMS",location_label(loc),c)
+        badge=dict(p); badge["fetched_at"]=river.get("fetched_at"); self._source_badge(draw,badge,c,settings,source="USGS WATER DATA")
+        if not gauges:
+            draw.text((w//2,302),"NO NEARBY USGS GAGE-HEIGHT DATA",font=font(38,bold=True),fill=c["accent"],anchor="mm")
+            draw.text((w//2,356),f"Search radius: {river.get('radius_miles',60)} miles",font=font(20),fill=c["text"],anchor="mm"); return
+        primary=gauges[0]; history=river.get("primary_history") or []; trend="STEADY"; delta=None
+        if len(history)>=2:
+            delta=float(history[-1].get("value",0))-float(history[0].get("value",0)); trend="RISING" if delta>0.05 else "FALLING" if delta<-0.05 else "STEADY"
+        round_rect(draw,(58,140,744,446),20,c["panel2"],outline=c["muted"],width=2)
+        draw.text((82,165),str(primary.get("name") or "USGS Gauge")[:54].upper(),font=font(23,bold=True),fill=c["title"])
+        draw.text((82,208),f"{primary.get('distance_miles',0):.1f} MI FROM {str(loc.get('name') or 'LOCAL').upper()} • {primary.get('number','')}",font=font(13,bold=True,mono=True),fill=c["muted"])
+        draw.text((82,270),n(primary.get("gage_height_ft"),2," ft"),font=font(66,bold=True),fill=c["accent"])
+        detail=trend if delta is None else f"{trend}  {delta:+.2f} FT / {int((settings.get('local_data') or {}).get('rivers',{}).get('trend_hours',6))}H"
+        draw.text((82,350),detail,font=font(22,bold=True,mono=True),fill=c["text"])
+        draw.text((82,395),f"STREAMFLOW  {n(primary.get('streamflow_cfs'),0,' cfs')}",font=font(20,bold=True),fill=c["text"])
+        if len(history)>=2:
+            box=(780,160,1206,430); round_rect(draw,box,15,c["panel"],outline=c["panel2"],width=2); vals=[float(x["value"]) for x in history if x.get("value") is not None]
+            if vals:
+                lo=min(vals)-0.05; hi=max(vals)+0.05; pts=[]
+                for i,row in enumerate(history):
+                    if row.get("value") is None: continue
+                    x=box[0]+22+(box[2]-box[0]-44)*(i/max(1,len(history)-1)); y=box[3]-28-(float(row["value"])-lo)/max(0.1,hi-lo)*(box[3]-box[1]-56); pts.append((x,y))
+                if len(pts)>1: draw.line(pts,fill=c["accent"],width=4,joint="curve")
+                draw.text((box[0]+18,box[1]+14),"GAGE HEIGHT TREND",font=font(13,bold=True,mono=True),fill=c["muted"])
+        for i,g in enumerate(gauges[1:3]):
+            y=474+i*54; draw.text((72,y),str(g.get("name") or "USGS Gauge")[:54],font=font(16,bold=True),fill=c["text"]); draw.text((1190,y),f"{n(g.get('gage_height_ft'),2,' ft')}  •  {g.get('distance_miles',0):.0f} mi",font=font(15,bold=True,mono=True),fill=c["accent"],anchor="ra")
+        draw.text((w//2,590),"USGS PROVISIONAL REAL-TIME DATA • FLOOD STAGE IS NOT INFERRED BY WEATHERSTREAM",font=font(11,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_climate_context(self, draw, w, h, settings, p, c):
+        loc=p.get("location") or {}; climate=p.get("climate") or {}; daily=p.get("daily") or {}; loc_id=loc.get("id") or settings.get("primary_location_id")
+        self._header(draw,w,"CLIMATE CONTEXT",location_label(loc),c)
+        forecast_high=(daily.get("temperature_2m_max") or [None])[0]; forecast_low=(daily.get("temperature_2m_min") or [None])[0]
+        if climate.get("normal_high_f") is not None or climate.get("normal_low_f") is not None:
+            badge=dict(p); badge["fetched_at"]=climate.get("fetched_at"); self._source_badge(draw,badge,c,settings,source="NOAA NCEI • 1991–2020 NORMALS")
+            nh=climate.get("normal_high_f"); nl=climate.get("normal_low_f")
+            dh=(float(forecast_high)-float(nh)) if forecast_high is not None and nh is not None else None
+            dl=(float(forecast_low)-float(nl)) if forecast_low is not None and nl is not None else None
+            rows=[("FORECAST HIGH",n(forecast_high,0,"°"),"NORMAL HIGH",n(nh,0,"°"),dh),("FORECAST LOW",n(forecast_low,0,"°"),"NORMAL LOW",n(nl,0,"°"),dl)]
+            for i,(lab1,val1,lab2,val2,delta) in enumerate(rows):
+                y=150+i*166; round_rect(draw,(76,y,1204,y+138),18,c["panel2"],outline=c["muted"],width=2)
+                draw.text((104,y+25),lab1,font=font(15,bold=True,mono=True),fill=c["muted"]); draw.text((104,y+62),val1,font=font(42,bold=True),fill=c["text"])
+                draw.text((520,y+25),lab2,font=font(15,bold=True,mono=True),fill=c["muted"]); draw.text((520,y+62),val2,font=font(42,bold=True),fill=c["text"])
+                dtext="--" if delta is None else f"{delta:+.0f}° VS NORMAL"
+                draw.text((1148,y+68),dtext,font=font(24,bold=True,mono=True),fill=c["accent"],anchor="ra")
+            draw.text((w//2,522),f"CLIMATE STATION  {climate.get('station_name') or climate.get('station_id')}",font=font(15,bold=True,mono=True),fill=c["muted"],anchor="mm")
+        else:
+            summary=self.history_store.summary(loc_id,24*30) if self.history_store and loc_id else {"samples":0}
+            draw.text((w//2,154),"OFFICIAL CLIMATE STATION NOT CONFIGURED",font=font(26,bold=True,mono=True),fill=c["accent"],anchor="mm")
+            draw.text((w//2,196),"Add an NCEI 1991–2020 normals station ID in Admin to enable official normals.",font=font(18),fill=c["text"],anchor="mm")
+            round_rect(draw,(100,244,1180,478),20,c["panel2"],outline=c["muted"],width=2)
+            draw.text((w//2,278),"LOCAL 30-DAY CONTEXT",font=font(18,bold=True,mono=True),fill=c["muted"],anchor="mm")
+            cards=[("RECENT HIGH",n(summary.get("high"),0,"°")),("RECENT LOW",n(summary.get("low"),0,"°")),("PEAK GUST",n(summary.get("max_gust"),0," mph")),("OBSERVATIONS",str(summary.get("samples",0)))]
+            cell=1000//4
+            for i,(lab,val) in enumerate(cards):
+                x=140+i*cell; draw.text((x+cell//2,335),lab,font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm"); draw.text((x+cell//2,390),val,font=font(32,bold=True),fill=c["text"],anchor="mm")
+            draw.text((w//2,520),"LOCAL HISTORY IS NOT AN OFFICIAL CLIMATE NORMAL OR RECORD",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
     def _draw_weather_history(self, draw, w, h, settings, p, c):
         self._header(draw,w,"24-HOUR WEATHER HISTORY",location_label(p.get("location") or {}),c)
         loc_id=(p.get("location") or {}).get("id") or settings.get("primary_location_id")
@@ -1993,23 +2529,56 @@ class WeatherRenderer:
 
     def _draw_event_summary(self, draw, w, h, settings, snapshot, p, c):
         status=settings.get("_event") or {}; event_type=str(status.get("event_type") or settings.get("_channel_mode","").removeprefix("event_"))
-        definition=EVENT_TYPES.get(event_type) or {}; title=str(definition.get("name") or "Weather Event")
-        self._header(draw,w,title,"AUTOMATIC EVENT CHANNEL",c)
+        definition=EVENT_TYPES.get(event_type) or {}; identity_row=event_identity(settings) or {}
+        title=str(identity_row.get("name") or definition.get("name") or "Weather Event")
+        self._header(draw,w,title,"DEDICATED RWN EVENT CHANNEL",c)
         alerts=status.get("alerts") or snapshot.get("alerts") or []; active=bool(status.get("active")); cooling=bool(status.get("cooldown_active"))
         state="ACTIVE OFFICIAL ALERTS" if active else "POST-EVENT MONITORING" if cooling else "STANDING BY"
-        color=str(definition.get("color") or c["accent"])
-        round_rect(draw,(65,130,w-65,230),16,c["panel2"],outline=color,width=4)
-        draw.text((w//2,180),state,font=font(38,bold=True,mono=True),fill=color,anchor="mm")
+        color=str(c.get("accent") or definition.get("color") or "#ff3344")
+        event_for_icon={"tornado":"Tornado Warning","flood":"Flash Flood Warning","winter":"Winter Storm Warning","wildfire":"Red Flag Warning","heat":"Excessive Heat Warning"}.get(event_type,title)
+        target=getattr(draw,"_image",None)
+        if target is not None: paste_rwn_icon(target,rwn_alert_icon(event_for_icon,118),74,132)
+        round_rect(draw,(215,126,w-64,226),16,c["panel2"],outline=color,width=4)
+        draw.text((245,146),state,font=font(29,bold=True,mono=True),fill=color)
+        draw.text((245,184),str(identity_row.get("slug") or "OFFICIAL ALERT MONITORING"),font=font(15,bold=True,mono=True),fill=c["muted"])
+
         if alerts:
-            y=270
-            for alert in alerts[:3]:
-                round_rect(draw,(80,y,w-80,y+78),12,c["panel"])
-                draw.text((105,y+13),str(alert.get("event") or title).upper()[:70],font=font(24,bold=True),fill=c["title"])
-                draw.text((105,y+48),str(alert.get("areaDesc") or alert.get("headline") or "Local service area")[:105],font=font(15,mono=True),fill=c["muted"]); y+=94
+            alert=alerts[0]
+            round_rect(draw,(64,248,w-64,386),16,c["panel"],outline=color,width=2)
+            draw.text((88,266),str(alert.get("event") or title).upper()[:72],font=font(29,bold=True),fill=c["title"])
+            area=str(alert.get("areaDesc") or "Local service area")
+            draw.text((88,309),area[:100],font=font(18,bold=True),fill=c["text"])
+            headline=str(alert.get("headline") or alert.get("description") or "Official National Weather Service alert is active.").replace("\n"," ")
+            yy=342
+            for line in textwrap.wrap(headline,width=102)[:2]: draw.text((88,yy),line,font=font(16),fill=c["muted"]); yy+=23
         else:
-            draw.text((w//2,328),f"No active {title.lower()} alert is currently matched.",font=font(27,bold=True),fill=c["text"],anchor="mm")
-            draw.text((w//2,382),"This channel starts automatically when an official NWS alert qualifies.",font=font(19),fill=c["muted"],anchor="mm")
-        draw.text((w//2,590),"SOURCE: NOAA / NATIONAL WEATHER SERVICE • FOLLOW LOCAL OFFICIAL INSTRUCTIONS",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm")
+            round_rect(draw,(64,248,w-64,386),16,c["panel"],outline=c["panel2"],width=2)
+            draw.text((w//2,297),f"No active {title.lower()} alert is currently matched.",font=font(25,bold=True),fill=c["text"],anchor="mm")
+            draw.text((w//2,341),"RWN remains in event-channel monitoring mode through the configured cooldown.",font=font(16),fill=c["muted"],anchor="mm")
+
+        cur=p.get("current") or {}; hourly=p.get("hourly") or {}; aq=p.get("air_quality") or {}; rivers=p.get("rivers") or {}
+        rain_prob=self._max_next(hourly,"precipitation_probability",12); rain_24=self._sum_next(hourly,"precipitation",24)
+        temp=cur.get("temperature_2m"); feels=cur.get("apparent_temperature"); gust=cur.get("wind_gusts_10m"); rh=cur.get("relative_humidity_2m")
+        spc=(settings.get("_spc_outlook") or {}).get("day1") or {}
+        if event_type=="tornado":
+            metrics=[("SPC DAY 1",str(spc.get("name") or "--").upper()),("PEAK GUST",n(gust,0," mph")),("RAIN NEXT 12H",f"{rain_prob:.0f}%")]
+        elif event_type=="flood":
+            metrics=[("24H MODEL RAIN",f"{rain_24:.2f} in"),("RAIN NEXT 12H",f"{rain_prob:.0f}%"),("USGS GAUGES",str(len(rivers.get("gauges") or [])))]
+        elif event_type=="winter":
+            metrics=[("TEMPERATURE",n(temp,0,"°")),("FEELS LIKE",n(feels,0,"°")),("PRECIP CHANCE",f"{rain_prob:.0f}%")]
+        elif event_type=="heat":
+            metrics=[("TEMPERATURE",n(temp,0,"°")),("FEELS LIKE",n(feels,0,"°")),("HUMIDITY",n(rh,0,"%"))]
+        elif event_type=="wildfire":
+            metrics=[("HUMIDITY",n(rh,0,"%")),("PEAK GUST",n(gust,0," mph")),("AIR QUALITY",f"AQI {safe(aq.get('aqi'))}")]
+        else:
+            metrics=[("TEMPERATURE",n(temp,0,"°")),("WIND",n(cur.get("wind_speed_10m"),0," mph")),("RAIN",f"{rain_prob:.0f}%")]
+        cell=(w-128)//3
+        for i,(label,value) in enumerate(metrics):
+            x1=64+i*cell; x2=64+(i+1)*cell-10
+            round_rect(draw,(x1,414,x2,535),14,c["panel2"],outline=c.get("accent2",c["accent"]),width=2)
+            draw.text((x1+20,434),label,font=font(13,bold=True,mono=True),fill=c["muted"])
+            draw.text((x1+20,472),value,font=font(28,bold=True),fill=c["text"])
+        draw.text((w//2,584),"SOURCE: NOAA / NATIONAL WEATHER SERVICE • FOLLOW LOCAL OFFICIAL INSTRUCTIONS",font=font(12,bold=True,mono=True),fill=c["muted"],anchor="mm")
 
     def _draw_goes_product(self, img, draw, w, h, settings, c, product):
         title="GOES-19 GeoColor Satellite" if product=="satellite" else "GOES-19 Lightning Mapper"
@@ -2525,8 +3094,12 @@ class WeatherRenderer:
         draw.rectangle((0,ticker_top,bug_w,h),fill=c["panel2"])
         draw.line((bug_w,ticker_top,bug_w,h),fill=c["muted"],width=2)
         draw.text((bug_w//2,ticker_top+24),clock,font=font(26,bold=True,mono=True),fill=c["accent"],anchor="mm")
-        draw.text((bug_w//2,ticker_top+57),callsign or station[:24],font=font(15,bold=True,mono=True),fill=c["text"],anchor="mm")
-        if callsign: draw.text((bug_w//2,ticker_top+75),station[:27],font=font(10,mono=True),fill=c["muted"],anchor="mm")
+        if c.get("event_key"):
+            draw.text((bug_w//2,ticker_top+54),f"RWN {str(c.get('event_key')).upper()}",font=font(15,bold=True,mono=True),fill=c["text"],anchor="mm")
+            draw.text((bug_w//2,ticker_top+74),str(c.get("event_desk") or station)[:31],font=font(9,bold=True,mono=True),fill=c.get("accent2",c["muted"]),anchor="mm")
+        else:
+            draw.text((bug_w//2,ticker_top+57),callsign or station[:24],font=font(15,bold=True,mono=True),fill=c["text"],anchor="mm")
+            if callsign: draw.text((bug_w//2,ticker_top+75),station[:27],font=font(10,mono=True),fill=c["muted"],anchor="mm")
 
         severe=self._takeover_alert(settings,snapshot)
         mode=self._visual(settings).get("footer_mode","data_ribbon")
@@ -2548,20 +3121,66 @@ class WeatherRenderer:
             if primary:
                 cur=primary.get("current",{}); daily=primary.get("daily",{}); hourly=primary.get("hourly",{}); loc=primary.get("location",{})
                 highs=daily.get("temperature_2m_max") or []; lows=daily.get("temperature_2m_min") or []
-                items=[
-                    (str(loc.get("name") or "LOCAL").upper(),f"{n(cur.get('temperature_2m'),0,'°')} {str(cur.get('description') or '')[:18]}"),
-                    ("TODAY",f"{n(highs[0] if highs else None,0,'°')} / {n(lows[0] if lows else None,0,'°')}"),
-                    ("RAIN NEXT 12H",f"{self._max_next(hourly,'precipitation_probability',12):.0f}%"),
-                    ("WIND",f"{cur.get('wind_cardinal','--')} {n(cur.get('wind_speed_10m'),0,' mph')}")
-                ]
+                event_key=str(c.get("event_key") or "")
+                if event_key:
+                    rain12=self._max_next(hourly,"precipitation_probability",12); rain24=self._sum_next(hourly,"precipitation",24)
+                    aq=primary.get("air_quality") or {}; gauges=((primary.get("rivers") or {}).get("gauges") or [])
+                    temp=n(cur.get("temperature_2m"),0,"°"); feels=n(cur.get("apparent_temperature"),0,"°"); gust=n(cur.get("wind_gusts_10m"),0," mph")
+                    if event_key=="severe":
+                        items=[("SEVERE DESK","ALERTS • RADAR"),("CURRENT",f"{temp} {str(cur.get('description') or '')[:14]}"),("PEAK GUST",gust),("RAIN NEXT 12H",f"{rain12:.0f}%")]
+                    elif event_key=="flood":
+                        items=[("FLOOD DESK","HYDROLOGY MONITOR"),("24H MODEL RAIN",f"{rain24:.2f} in"),("RAIN NEXT 12H",f"{rain12:.0f}%"),("USGS GAUGES",str(len(gauges)))]
+                    elif event_key=="winter":
+                        items=[("WINTER DESK","SNOW • ICE • COLD"),("TEMPERATURE",temp),("FEELS LIKE",feels),("PRECIP NEXT 12H",f"{rain12:.0f}%")]
+                    elif event_key=="heat":
+                        items=[("HEAT DESK","HEAT INDEX • SAFETY"),("TEMPERATURE",temp),("FEELS LIKE",feels),("HUMIDITY",n(cur.get("relative_humidity_2m"),0,"%"))]
+                    elif event_key=="wildfire":
+                        items=[("FIRE WEATHER","WIND • HUMIDITY • AQI"),("HUMIDITY",n(cur.get("relative_humidity_2m"),0,"%")),("PEAK GUST",gust),("AIR QUALITY",f"AQI {safe(aq.get('aqi'))} {str(aq.get('category') or '')[:10]}")]
+                    else:
+                        tropical=settings.get("_tropical") or {}; active=bool(tropical.get("segment_active") or tropical.get("channel_active"))
+                        items=[("TROPICS WATCH","NHC • GULF • ATLANTIC"),("LOCAL",f"{temp} {str(cur.get('description') or '')[:14]}"),("TROPICS","OFFICIAL UPDATE" if active else "MONITORING"),("WIND",f"{cur.get('wind_cardinal','--')} {n(cur.get('wind_speed_10m'),0,' mph')}")]
+                else:
+                    story_cfg=settings.get("story_engine") or {}
+                    story=self._weather_story(settings,snapshot,primary,now) if story_cfg.get("enabled",True) else {"id":"quiet","title":"Quiet Weather","metrics":{}}
+                    metrics=story.get("metrics") or {}; sid=str(story.get("id") or "quiet")
+                    items=[(str(loc.get("name") or "LOCAL").upper(),f"{n(cur.get('temperature_2m'),0,'°')} {str(cur.get('description') or '')[:18]}")]
+                    if story_cfg.get("context_ribbon",True):
+                        items.append(("WEATHER STORY",str(story.get("title") or "LOCAL WEATHER").upper()[:22]))
+                        if sid in {"rain","flood","storms","severe"}:
+                            items.append(("RAIN NEXT 12H",f"{metrics.get('rain_probability_12h',0):.0f}% • {metrics.get('rain_24h_inches',0):.2f} in"))
+                        elif sid == "heat":
+                            items.append(("HEAT",f"PEAK {metrics.get('peak_heat_f') or 0:.0f}°"))
+                        elif sid == "wind":
+                            items.append(("WIND",f"GUST {metrics.get('peak_gust_mph',0):.0f} mph"))
+                        elif sid == "air_quality":
+                            aq=(primary.get("air_quality") or {}); items.append(("AIR QUALITY",f"AQI {aq.get('aqi','--')} {str(aq.get('category') or '')[:12]}"))
+                        elif sid in {"cold","winter"}:
+                            items.append(("COLD",f"LOW {metrics.get('low_24h_f') or 0:.0f}°"))
+                        elif sid == "tropical":
+                            items.append(("TROPICS","OFFICIAL UPDATE ACTIVE"))
+                        else:
+                            items.append(("TODAY",f"{n(highs[0] if highs else None,0,'°')} / {n(lows[0] if lows else None,0,'°')}"))
+                        items.append(("WIND",f"{cur.get('wind_cardinal','--')} {n(cur.get('wind_speed_10m'),0,' mph')}") if len(items)<4 else ("NEXT", "RWN STORY DIRECTOR"))
+                        items=items[:4]
+                    else:
+                        items.extend([
+                            ("TODAY",f"{n(highs[0] if highs else None,0,'°')} / {n(lows[0] if lows else None,0,'°')}"),
+                            ("RAIN NEXT 12H",f"{self._max_next(hourly,'precipitation_probability',12):.0f}%"),
+                            ("WIND",f"{cur.get('wind_cardinal','--')} {n(cur.get('wind_speed_10m'),0,' mph')}")
+                        ])
             else: items=[("SETUP","ADD A ZIP CODE")]
             area_w=w-bug_w; cell=area_w/max(1,len(items))
             for i,(label,value) in enumerate(items):
                 x1=int(bug_w+i*cell); x2=int(bug_w+(i+1)*cell)
                 if i: draw.line((x1,ticker_top+12,x1,h-12),fill=c["panel2"],width=2)
                 draw.text((x1+14,ticker_top+17),label,font=font(11,bold=True,mono=True),fill=c["muted"])
-                size=19 if len(value)<22 else 15
-                draw.text((x1+14,ticker_top+44),value,font=font(size,bold=True),fill=c["text"])
+                size=18 if len(value)<14 else 14 if len(value)<19 else 12
+                value_font=font(size,bold=True)
+                # Event-desk ribbons often use compact editorial phrases. Fit once
+                # against the available cell width so labels never collide.
+                while size>10 and draw.textbbox((0,0),value,font=value_font)[2] > max(40,x2-x1-26):
+                    size-=1; value_font=font(size,bold=True)
+                draw.text((x1+14,ticker_top+44),value,font=value_font,fill=c["text"])
 
         if bool(settings.get("_local8_active")) and not self._is_takeover_active(settings,snapshot):
             draw.rectangle((bug_w-82,ticker_top+4,bug_w-5,ticker_top+20),fill=c["accent"])

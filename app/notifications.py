@@ -83,8 +83,8 @@ class NotificationManager:
     def _deliver(self, event: dict[str, Any]) -> None:
         cfg = self._cfg()
         url = validate_webhook_url(str(cfg.get("webhook_url") or ""), bool(cfg.get("allow_private_targets", False)))
-        payload = {"product": "WeatherStream", "version": "0.3.4", "event": event}
-        response = self._client.post(url, json=payload, headers={"User-Agent": "WeatherStream/0.3.4 Webhook"})
+        payload = {"product": "WeatherStream", "version": "0.3.9", "event": event}
+        response = self._client.post(url, json=payload, headers={"User-Agent": "WeatherStream/0.3.9 Webhook"})
         response.raise_for_status()
         with self._lock:
             self._last_success = time.time()

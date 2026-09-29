@@ -39,7 +39,7 @@ def fixture():
 
 class V034IconSystemTests(unittest.TestCase):
     def test_schema_22_defaults(self):
-        self.assertEqual(DEFAULT_SETTINGS["version"],22)
+        self.assertEqual(DEFAULT_SETTINGS["version"],27)
         icons=DEFAULT_SETTINGS["icon_system"]
         self.assertTrue(icons["enabled"])
         self.assertTrue(icons["animation_enabled"])
@@ -80,9 +80,12 @@ class V034IconSystemTests(unittest.TestCase):
             root=Path(folder); settings_path=root/"settings.json"
             settings_path.write_text(json.dumps({"version":21,"presentation":{"sequence":["station_id","current","hourly","seven_day"]},"channels":{"zip_sequence":["current","hourly","seven_day"]}}),encoding="utf-8")
             with patch("app.config.CONFIG_DIR",root),patch("app.config.SETTINGS_PATH",settings_path): upgraded=ConfigStore().get()
-            self.assertEqual(upgraded["version"],22)
+            self.assertEqual(upgraded["version"],27)
             self.assertTrue(upgraded["icon_system"]["enabled"])
-            self.assertEqual(upgraded["presentation"]["sequence"][:4],["station_id","current","hourly","seven_day"])
+            seq=upgraded["presentation"]["sequence"]
+            original=[x for x in seq if x in {"station_id","current","hourly","seven_day"}]
+            self.assertEqual(original,["station_id","current","hourly","seven_day"])
+            self.assertIn("today_so_far",seq)
 
 
 if __name__=="__main__": unittest.main()

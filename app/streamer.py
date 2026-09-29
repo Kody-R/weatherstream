@@ -76,6 +76,10 @@ class ChannelWorker:
         self.last_viewer_activity: float | None = None
         self.last_idle_at: float | None = None
         self.activation_count = 0
+        # v0.3.9 Studio Control Room manual takeover state. Runtime-only by
+        # design: a restart always returns the channel to automatic programming.
+        self._manual_takeover_lock = threading.RLock()
+        self._manual_takeover: dict[str, Any] | None = None
 
         # v0.2.2.1 Local on the 8s state. This is a real programming block owned
         # by the channel worker instead of a clock-selected alternate renderer
@@ -404,6 +408,8 @@ class ChannelWorker:
                 "block_id": self._local8_block_id if self._local8_active else None,
                 "phase": phase,
                 "phase_index": self._local8_phase_index + 1 if phase else None,
+                "phase_index_zero": self._local8_phase_index if phase else None,
+                "phases": list(self._local8_phases) if self._local8_active else [],
                 "phase_count": len(self._local8_phases) if self._local8_active else 0,
                 "phase_elapsed_seconds": round(elapsed, 2) if elapsed is not None else None,
                 "narration_queued": self._local8_audio_queued if self._local8_active else False,
@@ -423,6 +429,54 @@ class ChannelWorker:
         self._start_local8(block_id, settings, context.get("primary") or {}, time.monotonic())
         self.note_viewer_activity()
         return True
+
+    def set_manual_takeover(self, slide: str, duration_seconds: int = 60) -> tuple[bool, str | None]:
+        if self.renderer.takeover_alert_for(self.location_id) is not None:
+            return False, "severe_weather_takeover"
+        duration = max(10, min(900, int(duration_seconds)))
+        now = time.time()
+        self._abort_local8("manual studio takeover")
+        with self._manual_takeover_lock:
+            self._manual_takeover = {
+                "slide": str(slide), "started_at": now, "expires_at": now + duration,
+                "duration_seconds": duration,
+            }
+        self.note_viewer_activity()
+        observability.event("studio", "Manual Studio takeover started", channel=self.key, slide=slide, duration_seconds=duration)
+        return True, None
+
+    def clear_manual_takeover(self, reason: str = "operator") -> bool:
+        with self._manual_takeover_lock:
+            active = self._manual_takeover
+            self._manual_takeover = None
+        if active:
+            observability.event("studio", "Manual Studio takeover cleared", channel=self.key, slide=active.get("slide"), reason=reason)
+            return True
+        return False
+
+    def _manual_takeover_status(self, now: float | None = None) -> dict[str, Any]:
+        now = float(now or time.time())
+        with self._manual_takeover_lock:
+            active = dict(self._manual_takeover) if self._manual_takeover else None
+        if not active:
+            return {"active": False}
+        remaining = float(active.get("expires_at") or 0) - now
+        if remaining <= 0:
+            self.clear_manual_takeover("expired")
+            return {"active": False}
+        return {**active, "active": True, "remaining_seconds": round(remaining, 1)}
+
+    def _manual_takeover_runtime(self, now: float) -> dict[str, Any]:
+        state = self._manual_takeover_status(now)
+        if not state.get("active"):
+            return {}
+        # Official severe-warning takeovers always win immediately.
+        if self.renderer.takeover_alert_for(self.location_id) is not None:
+            self.clear_manual_takeover("severe_weather_takeover")
+            return {}
+        duration = max(1.0, float(state.get("duration_seconds") or 60))
+        elapsed = max(0.0, now - float(state.get("started_at") or now))
+        return {"force_slide": state.get("slide"), "force_progress": min(1.0, elapsed / duration), "studio_manual_takeover": True}
 
     def _maybe_adapt(self, settings: dict[str, Any]) -> None:
         perf = settings.get("performance") or {}
@@ -480,6 +534,31 @@ class ChannelWorker:
         else:
             realtime_state = "FALLING BEHIND"
         avg_render_ms = (self._render_seconds_total / self._frames_rendered * 1000.0) if self._frames_rendered else None
+        manual_takeover = self._manual_takeover_status(now)
+        local8 = self._local8_status()
+        try:
+            playout = self.renderer.playout_status(self.location_id, self.mode, now)
+        except Exception:
+            playout = {"current_slide": None, "next_slide": None, "sequence": []}
+        if local8.get("active"):
+            phase = local8.get("phase")
+            phases = local8.get("phases") or []
+            idx = int(local8.get("phase_index_zero") or 0)
+            playout = {**playout, "current_slide": phase, "next_slide": phases[idx + 1] if idx + 1 < len(phases) else None, "source": "local_on_8s"}
+        if playout.get("severe_takeover") and manual_takeover.get("active"):
+            self.clear_manual_takeover("severe_weather_takeover")
+            manual_takeover = {"active": False}
+        if manual_takeover.get("active") and not playout.get("severe_takeover"):
+            auto_current = playout.get("current_slide")
+            total = max(1.0, float(manual_takeover.get("duration_seconds") or 60))
+            remaining = max(0.0, float(manual_takeover.get("remaining_seconds") or 0))
+            elapsed = max(0.0, total - remaining)
+            playout = {**playout, "next_slide": auto_current, "current_slide": manual_takeover.get("slide"), "source": "manual_takeover",
+                       "duration_seconds": int(total), "remaining_seconds": round(remaining,2), "elapsed_seconds": round(elapsed,2), "progress": round(min(1.0, elapsed/total),4)}
+        elif playout.get("severe_takeover"):
+            playout["source"] = "severe_takeover"
+        else:
+            playout.setdefault("source", "automatic")
         return {
             "key": self.key,
             "mode": self.mode,
@@ -499,7 +578,9 @@ class ChannelWorker:
             "last_chime_alert_id": self.last_chime_alert_id,
             "last_tts_alert_id": self.last_tts_alert_id,
             "last_tts_local_block_id": self.last_tts_local_block_id,
-            "local_on_8s": self._local8_status(),
+            "local_on_8s": local8,
+            "manual_takeover": manual_takeover,
+            "playout": playout,
             "encoder": self._active_encoder,
             "encoder_device": self._active_encoder_device,
             "encoder_device_info": device_info(self._active_encoder, self._active_encoder_device),
@@ -872,6 +953,7 @@ class ChannelWorker:
                         started=time.perf_counter(); now=time.time()
                         runtime = self._runtime_render_overrides(settings)
                         runtime.update(self._local8_tick(now))
+                        runtime.update(self._manual_takeover_runtime(now))
                         image=self.renderer.render_channel(now, self.location_id, self.mode, runtime_overrides=runtime); frame_bytes=image.tobytes()
                         self._frames_rendered += 1; self._render_seconds_total += time.perf_counter()-started
                         next_content = tick + content_interval
@@ -988,6 +1070,17 @@ class Streamer:
                 worker.start()
         self._wake.set()
         return True
+
+    def set_manual_takeover(self, key: str, slide: str, duration_seconds: int = 60) -> tuple[bool, str | None]:
+        worker = self.activate_channel(key)
+        if worker is None:
+            return False, "channel_not_found"
+        return worker.set_manual_takeover(slide, duration_seconds)
+
+    def clear_manual_takeover(self, key: str) -> bool:
+        with self._lock:
+            worker = self._workers.get(key)
+        return worker.clear_manual_takeover() if worker else False
 
     def start_local8_test(self, key: str) -> bool:
         """Activate a Local channel if needed and start its test block."""

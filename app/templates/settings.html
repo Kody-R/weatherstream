@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.3.4 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.3.9 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.4</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.9</div>
       <h1>Channel Configuration</h1>
     </div>
     <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/studio">Studio</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
@@ -27,7 +27,7 @@
 
   <section class="grid two">
     <article class="card">
-      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.4</span></div>
+      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.9</span></div>
       <label class="checkbox"><input id="regionsEnabled" type="checkbox"> Enable explicit multi-region assignments</label>
       <div class="form-grid"><label>Region name<input id="regionName" placeholder="Gulf Coast"></label><label>Callsign<input id="regionCallsign" maxlength="12" placeholder="RWN-GC"></label><label>Theme<select id="regionTheme"><option value="local-90s">Local Cable 90s</option><option value="classic-blue">Classic Blue</option><option value="retro-2000">Retro 2000</option><option value="terminal-80s">Weather Terminal 80s</option><option value="cable-gold">Cable Gold</option></select></label><label>Branding profile<input id="regionBranding" value="default" maxlength="32"></label><label>Locations<select id="regionLocations" multiple size="4"></select></label></div>
       <button class="button ghost" type="button" onclick="addRegion()">Add Region</button><div id="regionList" class="locations top-gap"></div><button class="button top-gap" onclick="saveGeneral()">Save Network Regions</button>
@@ -42,6 +42,22 @@
   <section class="grid two">
     <article class="card"><div class="card-head"><div><h2>Automatic Event Channels</h2><p>Standing IPTV channels wake from matching official NWS alerts and remain available through a cooldown.</p></div><span class="pill">AUTOMATIC</span></div><div class="form-grid"><label class="checkbox"><input id="eventsEnabled" type="checkbox"> Publish event channels</label><label class="checkbox"><input id="eventsAutoStart" type="checkbox"> Auto-start matched channels</label><label>Cooldown (hours)<input id="eventsCooldown" type="number" min="0" max="24"></label><label class="checkbox"><input class="event-type" value="tornado" type="checkbox"> Tornado</label><label class="checkbox"><input class="event-type" value="flood" type="checkbox"> Flood</label><label class="checkbox"><input class="event-type" value="winter" type="checkbox"> Winter</label><label class="checkbox"><input class="event-type" value="wildfire" type="checkbox"> Wildfire</label><label class="checkbox"><input class="event-type" value="heat" type="checkbox"> Extreme heat</label></div><button class="button" onclick="saveGeneral()">Save Event Channels</button></article>
     <article class="card"><div class="card-head"><div><h2>Map Engine 3.0</h2><p>Broadcast maps combining radar, warnings, official SPC risk, WPC fronts/significant weather, WPC QPF, GOES imagery, boundaries, cities, and tropical context.</p></div><span class="pill">NOAA MAPS</span></div><div class="form-grid"><label class="checkbox"><input id="map2Enabled" type="checkbox"> Enable Map Engine 3.0</label><label>Map refresh (seconds)<input id="map2Refresh" type="number" min="120" max="3600"></label><label class="checkbox"><input class="map2-layer" value="radar" type="checkbox"> Radar</label><label class="checkbox"><input class="map2-layer" value="alerts" type="checkbox"> Filled warning polygons</label><label class="checkbox"><input class="map2-layer" value="spc_outlook" type="checkbox"> SPC Day 1 geographic outlook</label><label class="checkbox"><input class="map2-layer" value="spc_probabilities" type="checkbox"> SPC tornado / hail / wind layers</label><label class="checkbox"><input class="map2-layer" value="surface_chart" type="checkbox"> WPC fronts / highs / lows</label><label class="checkbox"><input class="map2-layer" value="qpf" type="checkbox"> WPC 24-hour QPF</label><label class="checkbox"><input class="map2-layer" value="satellite" type="checkbox"> GOES satellite</label><label class="checkbox"><input class="map2-layer" value="lightning" type="checkbox"> GOES lightning</label><label class="checkbox"><input class="map2-layer" value="tropical_tracks" type="checkbox"> Tropical tracks</label><label class="checkbox"><input class="map2-layer" value="city_labels" type="checkbox"> City labels</label><label class="checkbox"><input class="map2-layer" value="boundaries" type="checkbox"> Boundaries</label></div><button class="button" onclick="saveGeneral()">Save Map Engine</button></article>
+  </section>
+
+
+  <section class="card">
+    <div class="card-head"><div><h2>Event Channel Identity</h2><p>Give each dedicated weather desk the approved v0.3.9 visual package while keeping the normal local channel on its selected station theme.</p></div><span class="pill">v0.3.9</span></div>
+    <div class="form-grid">
+      <label class="checkbox"><input id="eventIdentityEnabled" type="checkbox"> Enable dedicated event-channel visual identities</label>
+      <label class="checkbox"><input id="eventIdentityMotifs" type="checkbox"> Animated/subtle background motifs</label>
+      <label class="checkbox"><input class="event-identity-desk" value="severe" type="checkbox"> Severe Weather Center — charcoal / red / radar-first</label>
+      <label class="checkbox"><input class="event-identity-desk" value="flood" type="checkbox"> Flood & Hydrology Desk — navy / teal / water</label>
+      <label class="checkbox"><input class="event-identity-desk" value="winter" type="checkbox"> Winter Weather Desk — steel blue / silver / ice</label>
+      <label class="checkbox"><input class="event-identity-desk" value="heat" type="checkbox"> Heat Weather Desk — orange / red / heat gradient</label>
+      <label class="checkbox"><input class="event-identity-desk" value="wildfire" type="checkbox"> Fire Weather Desk — amber / charcoal / smoke</label>
+      <label class="checkbox"><input class="event-identity-desk" value="tropical" type="checkbox"> RWN Tropics Watch — ocean blue / turquoise / track</label>
+    </div>
+    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Event Identity</button><button class="button ghost" onclick="previewDesk('severe')">Preview Severe</button><button class="button ghost" onclick="previewDesk('event_flood')">Preview Flood</button><button class="button ghost" onclick="previewDesk('event_winter')">Preview Winter</button><button class="button ghost" onclick="previewDesk('event_heat')">Preview Heat</button><button class="button ghost" onclick="previewDesk('event_wildfire')">Preview Wildfire</button><button class="button ghost" onclick="previewDesk('tropics')">Preview Tropical</button></div>
   </section>
 
   <section class="grid two">
@@ -112,14 +128,31 @@
     </article>
   </section>
 
+  <section class="card">
+    <div class="card-head"><div><h2>Local Observations & Climate</h2><p>Prefer real nearby NWS station observations for current conditions, add local history context, modeled air-quality guidance, nearby USGS river gauges, and optional NOAA climate normals.</p></div><span class="pill">v0.3.9</span></div>
+    <div class="form-grid">
+      <label class="checkbox"><input id="localObsEnabled" type="checkbox"> Discover nearby NWS observation stations</label>
+      <label class="checkbox"><input id="localObsUseCurrent" type="checkbox"> Prefer NWS observations for Current Conditions</label>
+      <label class="checkbox"><input id="localAqiEnabled" type="checkbox"> Air Quality screen (Open-Meteo/CAMS modeled guidance)</label>
+      <label class="checkbox"><input id="localRiversEnabled" type="checkbox"> Nearby USGS river gauges</label>
+      <label>River search radius (miles)<input id="localRiverRadius" type="number" min="10" max="250" step="5"></label>
+      <label>Maximum river gauges<input id="localRiverMax" type="number" min="1" max="6" step="1"></label>
+      <label>River trend window (hours)<input id="localRiverTrend" type="number" min="1" max="48" step="1"></label>
+      <label class="checkbox"><input id="localClimateEnabled" type="checkbox"> NOAA climate-normal context</label>
+      <label class="wide">NCEI climate station ID <span class="hint">Optional. Enter the station ID used for official 1991–2020 daily normals. If blank, RWN clearly labels its local 30-day context as non-official.</span><input id="localClimateStation" placeholder="Example: USW00003951"></label>
+    </div>
+    <div class="row-actions"><button class="button" onclick="saveGeneral()">Save Local Data Settings</button><button class="button ghost" onclick="manualRefresh()">Refresh Local Data</button></div>
+    <p class="hint top-gap">NWS observations may omit individual fields; RWN falls back field-by-field to the forecast/model feed. USGS values are provisional and WeatherStream does not infer flood stage.</p>
+  </section>
+
 
   <section class="card">
     <div class="card-head">
       <div>
         <h2>Presentation</h2>
-        <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
+        <p>Broadcast Motion 2.0, desk-specific transitions, screen-entry animation, station IDs, forecasts, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.3.4</span>
+      <span class="pill">v0.3.9</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -137,6 +170,15 @@
         </select>
       </label>
       <label>Transition seconds<input id="transitionSeconds" type="number" min="0" max="2" step="0.05"></label>
+      <label class="checkbox"><input id="broadcastMotionEnabled" type="checkbox"> Broadcast Motion 2.0</label>
+      <label class="checkbox"><input id="autoMotionTransitions" type="checkbox"> Automatic network/desk transitions</label>
+      <label class="checkbox"><input id="deskMotionTransitions" type="checkbox"> Event desk signature wipes</label>
+      <label>Network motion style<select id="networkMotionStyle"><option value="clean">RWN clean wipe</option><option value="soft">Soft crossfade</option><option value="dynamic">Panel push</option></select></label>
+      <label>Motion transition seconds<input id="motionTransitionSeconds" type="number" min="0.15" max="1.5" step="0.05"></label>
+      <label class="checkbox"><input id="entryAnimation" type="checkbox"> Screen-entry settle animation</label>
+      <label>Entry style<select id="entryMotionStyle"><option value="broadcast">Broadcast lift</option><option value="snap">Impact settle</option><option value="glide">Glide</option><option value="soft">Soft focus</option><option value="none">None</option></select></label>
+      <label>Entry seconds<input id="entryMotionSeconds" type="number" min="0" max="1.25" step="0.05"></label>
+      <label class="checkbox"><input id="emergencyHardCut" type="checkbox"> Hard-cut immediately to severe takeovers</label>
       <label class="checkbox"><input id="showStationId" type="checkbox"> Show station ID bumper</label>
       <label class="checkbox"><input id="backgroundMotion" type="checkbox"> Animated theme background</label>
       <label class="checkbox"><input id="visualSystemEnabled" type="checkbox"> Visual System 2.0 scalable canvas</label>
@@ -149,11 +191,12 @@
       <label>Icon motion speed<input id="iconAnimationSpeed" type="number" min="0.25" max="4" step="0.05"></label>
       <label class="checkbox"><input id="metricIcons" type="checkbox"> Metric icons on data cards</label>
       <label class="checkbox"><input id="alertIcons" type="checkbox"> Custom severe-weather icons</label>
-      <label class="wide">Slide order <span class="hint">Map Engine 3.0 adds spc_map, spc_hazards, surface_map, qpf_map, and hazard_map in addition to the existing radar/map slides.</span>
+      <label class="wide">Slide order <span class="hint">Local Observations adds today_so_far, past_24_hours, air_quality, local_rivers, and climate_context. Map Engine 3.0 slides remain available.</span>
         <input id="slideSequence">
       </label>
       <label>Station ID<input id="durStation" type="number" min="3" max="20"></label>
       <label>Current<input id="durCurrent" type="number" min="3" max="60"></label>
+      <label>Weather Story Brief<input id="durStoryBrief" type="number" min="3" max="60"></label>
       <label>Today<input id="durToday" type="number" min="3" max="60"></label>
       <label>NWS Forecast<input id="durNwsForecast" type="number" min="3" max="60"></label>
       <label>Next 24 Hours<input id="durDayAhead" type="number" min="3" max="60"></label>
@@ -166,6 +209,11 @@
       <label>Storm Potential<input id="durStormOutlook" type="number" min="3" max="60"></label>
       <label>SPC Outlook<input id="durSpcOutlook" type="number" min="3" max="60"></label>
       <label>Condition Focus<input id="durConditionFocus" type="number" min="3" max="60"></label>
+      <label>Today So Far<input id="durTodaySoFar" type="number" min="3" max="60"></label>
+      <label>Past 24 Hours<input id="durPast24" type="number" min="3" max="60"></label>
+      <label>Air Quality<input id="durAirQuality" type="number" min="3" max="60"></label>
+      <label>Local Rivers<input id="durLocalRivers" type="number" min="3" max="60"></label>
+      <label>Climate Context<input id="durClimateContext" type="number" min="3" max="60"></label>
       <label>24-Hour History<input id="durWeatherHistory" type="number" min="3" max="60"></label>
       <label>Local Radar<input id="durRadarLocal" type="number" min="3" max="60"></label>
       <label>Regional Radar<input id="durRadarRegional" type="number" min="3" max="60"></label>
@@ -423,6 +471,15 @@
         <label>Humid dew point threshold (°F)<input id="smartHumidDew" type="number" min="45" max="80"></label>
         <label>Dry dew point threshold (°F)<input id="smartDryDew" type="number" min="0" max="55"></label>
         <label class="checkbox"><input id="smartStoryOrdering" type="checkbox"> Prioritize the most important weather story</label>
+        <label class="checkbox"><input id="storyEngineEnabled" type="checkbox"> Weather Story Engine (adaptive rundown)</label>
+        <label class="checkbox"><input id="storyBriefEnabled" type="checkbox"> Show “The Weather Story” brief</label>
+        <label class="checkbox"><input id="storyContextEnabled" type="checkbox"> Include context block after the main forecast</label>
+        <label class="checkbox"><input id="storyRibbonEnabled" type="checkbox"> Story-aware lower-third data ribbon</label>
+        <label>Maximum adaptive slides<input id="storyMaxSlides" type="number" min="4" max="24"></label>
+        <label>Story hold (minutes)<input id="storyHoldMinutes" type="number" min="0" max="60"></label>
+        <label>AQI story threshold<input id="storyAqiThreshold" type="number" min="0" max="500"></label>
+        <label>Heavy-rain story (in / 24h)<input id="storyHeavyRain" type="number" min="0.1" max="10" step="0.1"></label>
+        <label>High-wind story gust (mph)<input id="storyHighWind" type="number" min="10" max="120"></label>
         <label class="checkbox"><input id="daypartsEnabled" type="checkbox"> Enable daypart programming</label>
         <label>Morning starts<input id="morningStart" type="number" min="0" max="23"></label>
         <label>Daytime starts<input id="daytimeStart" type="number" min="0" max="23"></label>
@@ -484,7 +541,7 @@
   <section class="card">
     <div class="card-head"><div><h2>Preview & Test Console</h2><p>Preview individual slides without changing the live channel. TEST warning graphics are clearly marked and never enter the real alert feed.</p></div><span class="pill">TEST MODE</span></div>
     <div class="row-actions">
-      <button class="button ghost" onclick="previewSlide('station_id')">Station ID</button><button class="button ghost" onclick="previewSlide('current')">Current</button><button class="button ghost" onclick="previewSlide('condition_focus')">Condition Focus</button><button class="button ghost" onclick="previewSlide('weather_history')">24h History</button><button class="button ghost" onclick="previewSlide('spc_outlook')">SPC Outlook</button><button class="button ghost" onclick="previewSlide('radar_local')">Local Radar</button><button class="button danger" onclick="previewTestAlert('alert')">TEST Warning</button><button class="button danger" onclick="previewTestAlert('alert_radar')">TEST Warning Radar</button>
+      <button class="button ghost" onclick="previewSlide('station_id')">Station ID</button><button class="button ghost" onclick="previewSlide('current')">Current</button><button class="button ghost" onclick="previewSlide('condition_focus')">Condition Focus</button><button class="button ghost" onclick="previewSlide('today_so_far')">Today So Far</button><button class="button ghost" onclick="previewSlide('past_24_hours')">Past 24h</button><button class="button ghost" onclick="previewSlide('air_quality')">AQI</button><button class="button ghost" onclick="previewSlide('local_rivers')">Rivers</button><button class="button ghost" onclick="previewSlide('climate_context')">Climate</button><button class="button ghost" onclick="previewSlide('weather_history')">Legacy History</button><button class="button ghost" onclick="previewSlide('spc_outlook')">SPC Outlook</button><button class="button ghost" onclick="previewSlide('radar_local')">Local Radar</button><button class="button danger" onclick="previewTestAlert('alert')">TEST Warning</button><button class="button danger" onclick="previewTestAlert('alert_radar')">TEST Warning Radar</button>
     </div>
     <div class="rundown-controls top-gap"><label>Preview pace<select id="rundownPace"><option value="0.75">0.75 sec / slide</option><option value="1.5" selected>1.5 sec / slide</option><option value="3">3 sec / slide</option></select></label><button class="button" onclick="startRundownPreview()">Play Rundown</button><button class="button ghost" onclick="stopRundownPreview()">Stop</button><span id="rundownState" class="hint">Ready</span></div>
   </section>
@@ -560,6 +617,16 @@ async function loadSettings() {
   weatherRefresh.value = settings.weather_refresh_seconds || 600;
   alertRefresh.value = settings.alert_refresh_seconds || 60;
   nwsUserAgent.value = settings.nws_user_agent || '';
+  const localData = settings.local_data || {};
+  localObsEnabled.checked = localData.observations?.enabled !== false;
+  localObsUseCurrent.checked = localData.observations?.use_for_current !== false;
+  localAqiEnabled.checked = localData.air_quality?.enabled !== false;
+  localRiversEnabled.checked = localData.rivers?.enabled !== false;
+  localRiverRadius.value = localData.rivers?.radius_miles ?? 60;
+  localRiverMax.value = localData.rivers?.max_gauges ?? 3;
+  localRiverTrend.value = localData.rivers?.trend_hours ?? 6;
+  localClimateEnabled.checked = localData.climate?.enabled !== false;
+  localClimateStation.value = localData.climate?.ncei_station_id || '';
   radarEnabled.checked = settings.radar?.enabled !== false;
   radarFrames.value = settings.radar?.frame_count || 8;
   radarFrameSeconds.value = settings.radar?.frame_seconds || 0.8;
@@ -580,6 +647,16 @@ async function loadSettings() {
   radarWideZoom.value = String(settings.radar?.views?.wide?.zoom || 5);
   transitionType.value = settings.presentation?.transition || 'crossfade';
   transitionSeconds.value = settings.presentation?.transition_seconds ?? 0.75;
+  const motion = settings.presentation?.broadcast_motion || {};
+  broadcastMotionEnabled.checked = motion.enabled !== false;
+  autoMotionTransitions.checked = motion.auto_transitions !== false;
+  deskMotionTransitions.checked = motion.desk_transitions !== false;
+  networkMotionStyle.value = motion.network_style || 'clean';
+  motionTransitionSeconds.value = motion.transition_seconds ?? 0.65;
+  entryAnimation.checked = motion.entry_animation !== false;
+  entryMotionStyle.value = motion.entry_style || 'broadcast';
+  entryMotionSeconds.value = motion.entry_seconds ?? 0.45;
+  emergencyHardCut.checked = motion.emergency_hard_cut !== false;
   showStationId.checked = settings.presentation?.show_station_id !== false;
   backgroundMotion.checked = settings.presentation?.background_motion !== false;
   const visual = settings.presentation?.visual_system || {};
@@ -620,6 +697,7 @@ async function loadSettings() {
   slideSequence.value = (settings.presentation?.sequence || []).join(',');
   durStation.value = settings.slides?.station_id || 6;
   durCurrent.value = settings.slides?.current || 12;
+  durStoryBrief.value = settings.slides?.story_brief || 11;
   durToday.value = settings.slides?.today || 12;
   durNwsForecast.value = settings.slides?.nws_forecast || 16;
   durDayAhead.value = settings.slides?.day_ahead || 16;
@@ -632,6 +710,11 @@ async function loadSettings() {
   durStormOutlook.value = settings.slides?.storm_outlook || 14;
   durSpcOutlook.value = settings.slides?.spc_outlook || 13;
   durConditionFocus.value = settings.slides?.condition_focus || 10;
+  durTodaySoFar.value = settings.slides?.today_so_far || 14;
+  durPast24.value = settings.slides?.past_24_hours || 16;
+  durAirQuality.value = settings.slides?.air_quality || 13;
+  durLocalRivers.value = settings.slides?.local_rivers || 16;
+  durClimateContext.value = settings.slides?.climate_context || 14;
   durWeatherHistory.value = settings.slides?.weather_history || 14;
   durRadarLocal.value = settings.slides?.radar_local || settings.slides?.radar || 16;
   durRadarRegional.value = settings.slides?.radar_regional || settings.slides?.radar || 16;
@@ -659,6 +742,16 @@ async function loadSettings() {
   smartHumidDew.value = settings.smart_programming?.humid_dewpoint_threshold ?? 65;
   smartDryDew.value = settings.smart_programming?.dry_dewpoint_threshold ?? 35;
   smartStoryOrdering.checked = settings.smart_programming?.smart_story_ordering !== false;
+  const story = settings.story_engine || {};
+  storyEngineEnabled.checked = story.enabled !== false;
+  storyBriefEnabled.checked = story.show_story_brief !== false;
+  storyContextEnabled.checked = story.include_context !== false;
+  storyRibbonEnabled.checked = story.context_ribbon !== false;
+  storyMaxSlides.value = story.max_slides ?? 13;
+  storyHoldMinutes.value = story.hold_minutes ?? 8;
+  storyAqiThreshold.value = story.aqi_threshold ?? 101;
+  storyHeavyRain.value = story.heavy_rain_inches ?? 1.0;
+  storyHighWind.value = story.high_wind_gust ?? 35;
   const fg = settings.forecast_graphics || {};
   forecastGraphicsEnabled.checked = fg.enabled !== false;
   forecastDayAheadHours.value = fg.day_ahead_hours ?? 24;
@@ -690,6 +783,7 @@ async function loadSettings() {
   tropicalThreshold.value = tropical.gulf_development_threshold ?? 40;
   tropicalCooldownHours.value = Math.round((tropical.cooldown_seconds ?? 21600) / 3600);
   const events=settings.event_channels||{};eventsEnabled.checked=events.enabled!==false;eventsAutoStart.checked=events.auto_start!==false;eventsCooldown.value=Math.round((events.cooldown_seconds??7200)/3600);document.querySelectorAll('.event-type').forEach(x=>x.checked=(events.types||{})[x.value]!==false);
+  const eventIdentity=settings.event_identity||{};eventIdentityEnabled.checked=eventIdentity.enabled!==false;eventIdentityMotifs.checked=eventIdentity.background_motifs!==false;document.querySelectorAll('.event-identity-desk').forEach(x=>x.checked=(eventIdentity.desks||{})[x.value]!==false);
   perfRenderFps.value = settings.video?.render_fps ?? 5;
   perfContentFps.value = settings.video?.content_fps ?? 3;
   perfOutputFps.value = settings.video?.output_fps ?? 15;
@@ -800,12 +894,15 @@ async function saveGeneral() {
     regions:{enabled:regionsEnabled.checked,items:settings.regions?.items||[]},
     branding_profiles:settings.branding_profiles||{},
     event_channels:{enabled:eventsEnabled.checked,auto_start:eventsAutoStart.checked,cooldown_seconds:Number(eventsCooldown.value||0)*3600,types:Object.fromEntries([...document.querySelectorAll('.event-type')].map(x=>[x.value,x.checked]))},
+    event_identity:{enabled:eventIdentityEnabled.checked,background_motifs:eventIdentityMotifs.checked,desk_bug:true,desks:Object.fromEntries([...document.querySelectorAll('.event-identity-desk')].map(x=>[x.value,x.checked]))},
     storm_guidance: {enabled: stormGuidanceEnabled.checked, refresh_seconds: Number(stormGuidanceRefresh.value || 900)},
     spc: {enabled: spcEnabled.checked, refresh_seconds: Number(spcRefresh.value || 900), minimum_smart_risk: spcMinimum.value},
     history: {enabled: historyEnabled.checked, retention_days: Number(historyRetention.value || 90)},
     smart_programming: {enabled: smartEnabled.checked, rain_threshold: Number(smartRain.value || 20), storm_threshold: Number(smartStorm.value || 15), heat_threshold: Number(smartHeat.value || 95), cold_threshold: Number(smartCold.value || 32), wind_threshold: Number(smartWind.value || 25), humid_dewpoint_threshold: Number(smartHumidDew.value || 65), dry_dewpoint_threshold: Number(smartDryDew.value || 35), smart_story_ordering: smartStoryOrdering.checked},
+    story_engine: {enabled: storyEngineEnabled.checked, show_story_brief: storyBriefEnabled.checked, include_context: storyContextEnabled.checked, context_ribbon: storyRibbonEnabled.checked, max_slides: Number(storyMaxSlides.value || 13), hold_minutes: Number(storyHoldMinutes.value || 8), aqi_threshold: Number(storyAqiThreshold.value || 101), heavy_rain_inches: Number(storyHeavyRain.value || 1.0), high_wind_gust: Number(storyHighWind.value || 35)},
     forecast_graphics: {enabled: forecastGraphicsEnabled.checked, day_ahead_hours: Number(forecastDayAheadHours.value || 24), wind_outlook_enabled: windOutlookEnabled.checked, humidity_outlook_enabled: humidityOutlookEnabled.checked, rain_accumulation_enabled: rainAccumulationEnabled.checked, nws_summary_enabled: nwsSummaryEnabled.checked},
     icon_system: {enabled: iconSystemEnabled.checked, style: 'rwn_classic', animation_enabled: iconAnimations.checked, animation_speed: Number(iconAnimationSpeed.value || 1.7), metric_icons: metricIcons.checked, alert_icons: alertIcons.checked, hero_icons: true},
+    local_data: {observations: {enabled: localObsEnabled.checked, use_for_current: localObsUseCurrent.checked}, air_quality: {enabled: localAqiEnabled.checked, provider: 'open_meteo'}, rivers: {enabled: localRiversEnabled.checked, radius_miles: Number(localRiverRadius.value || 60), max_gauges: Number(localRiverMax.value || 3), trend_hours: Number(localRiverTrend.value || 6)}, climate: {enabled: localClimateEnabled.checked, ncei_station_id: localClimateStation.value.trim()}},
     dayparts: {enabled: daypartsEnabled.checked, morning_start: Number(morningStart.value || 5), daytime_start: Number(daytimeStart.value || 10), evening_start: Number(eveningStart.value || 17), overnight_start: Number(overnightStart.value || 22), sequences: {morning: seqMorning.value.split(',').map(x=>x.trim()).filter(Boolean), daytime: seqDaytime.value.split(',').map(x=>x.trim()).filter(Boolean), evening: seqEvening.value.split(',').map(x=>x.trim()).filter(Boolean), overnight: seqOvernight.value.split(',').map(x=>x.trim()).filter(Boolean)}},
     cache: {retention_hours: Number(cacheRetention.value || 48), auto_cleanup: true},
     channels: {
@@ -880,6 +977,17 @@ async function saveGeneral() {
     presentation: {
       transition: transitionType.value,
       transition_seconds: Number(transitionSeconds.value || 0),
+      broadcast_motion: {
+        enabled: broadcastMotionEnabled.checked,
+        auto_transitions: autoMotionTransitions.checked,
+        desk_transitions: deskMotionTransitions.checked,
+        network_style: networkMotionStyle.value,
+        transition_seconds: Number(motionTransitionSeconds.value || 0.65),
+        entry_animation: entryAnimation.checked,
+        entry_style: entryMotionStyle.value,
+        entry_seconds: Number(entryMotionSeconds.value || 0.45),
+        emergency_hard_cut: emergencyHardCut.checked
+      },
       show_station_id: showStationId.checked,
       station_id_seconds: Number(durStation.value || 6),
       background_motion: backgroundMotion.checked,
@@ -912,6 +1020,7 @@ async function saveGeneral() {
     slides: {
       station_id: Number(durStation.value || 6),
       current: Number(durCurrent.value || 12),
+      story_brief: Number(durStoryBrief.value || 11),
       today: Number(durToday.value || 12),
       nws_forecast: Number(durNwsForecast.value || 16),
       day_ahead: Number(durDayAhead.value || 16),
@@ -924,6 +1033,11 @@ async function saveGeneral() {
       storm_outlook: Number(durStormOutlook.value || 14),
       spc_outlook: Number(durSpcOutlook.value || 13),
       condition_focus: Number(durConditionFocus.value || 10),
+      today_so_far: Number(durTodaySoFar.value || 14),
+      past_24_hours: Number(durPast24.value || 16),
+      air_quality: Number(durAirQuality.value || 13),
+      local_rivers: Number(durLocalRivers.value || 16),
+      climate_context: Number(durClimateContext.value || 14),
       weather_history: Number(durWeatherHistory.value || 14),
       radar: Number(durRadarLocal.value || 16),
       radar_local: Number(durRadarLocal.value || 16),
@@ -1001,6 +1115,7 @@ async function testLocal8Block() {
 function previewSlide(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?t=${Date.now()}`; notify(`Previewing ${name} for 12 seconds. Live channel unchanged.`); }
 function previewTestAlert(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?test_alert=true&t=${Date.now()}`; notify('TEST alert preview for 12 seconds — live channel unchanged.'); }
 function previewTropical(name) { previewHoldUntil = Date.now()+12000; preview.src = `/api/preview/${name}.jpg?channel_mode=tropics&t=${Date.now()}`; notify(`Previewing ${name.replaceAll('_',' ')} for 12 seconds. Live channels are unchanged.`); }
+function previewDesk(mode) { previewHoldUntil = Date.now()+12000; const slide=mode==='tropics'?'tropical_update':(mode==='severe'?'hazard_map':'current'); preview.src = `/api/preview/${slide}.jpg?channel_mode=${encodeURIComponent(mode)}&t=${Date.now()}`; notify(`Previewing the ${mode.replace('event_','').replaceAll('_',' ')} event identity for 12 seconds. Live channels are unchanged.`); }
 function stopRundownPreview() {
   if (rundownTimer) clearTimeout(rundownTimer);
   rundownTimer = null; previewHoldUntil = 0; rundownState.textContent = 'Stopped';

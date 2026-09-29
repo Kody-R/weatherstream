@@ -1,5 +1,163 @@
 # Changelog
 
+## 0.3.9
+
+### Added
+
+- Studio Control Room 2.0 with LIVE / NEXT production monitors
+- Actual playout state from the renderer timeline, including progress and remaining time
+- Graphical rundown with LIVE, NEXT, and QUEUED states plus slide thumbnails
+- Weather Story score, reason, evidence, NOW/NEXT/LATER/CONTEXT sections, and override state
+- Normalized source-health telemetry with HEALTHY, CACHED, STALE, ERROR, WAITING, and DISABLED states
+- Per-channel preview endpoint with generated fallback for idle on-demand channels
+- Runtime-only operator takeover controls with 30-second to 15-minute durations
+- Broadcast title/action-safe overlays in Studio
+- Recent operations/activity feed in Studio
+- Dedicated Control Room preference endpoint
+- Schema 27 migration and v0.3.9 regression coverage
+
+### Changed
+
+- Manual operator takeovers no longer persist in settings; service restart always returns to automatic programming
+- Official severe-weather takeover immediately clears and supersedes any operator takeover
+- Local on the 8s and manual takeovers are represented as out-of-band playout blocks instead of being mislabeled as part of the normal rotation
+- Studio editor remains separate from temporary TAKE LIVE controls
+- Docker image tag, service/API metadata, XMLTV generator, backup/diagnostic names, user agents, and Admin UI identify v0.3.9
+
+### Validation
+
+- Full Python regression suite passes
+- Dedicated schema migration, source-health, runtime-takeover, and Control Room surface tests pass
+- Python compilation, Studio JavaScript syntax, Docker Compose parsing, route integrity, and browser visual QA pass
+
+## 0.3.9
+
+### Added
+
+- Studio Control Room 2.0 with actual LIVE / NEXT production monitors
+- Renderer playout telemetry exposed to Studio, including current slide, next slide, progress, remaining time, daypart, and rundown source
+- Graphical rundown with thumbnails and LIVE/NEXT state
+- Weather Story reasoning panel with score, evidence, and NOW/NEXT/LATER/CONTEXT sections
+- Source-health normalization in `app.control_room` with freshness thresholds and cached/stale/error states
+- Recent control-activity panel using WeatherStream observability events
+- Broadcast safe-area guides
+- Temporary manual Studio takeover with configurable duration, automatic expiry, Return to Auto, and channel restart control
+- Per-channel worker playout status and manual-takeover telemetry
+- Schema 27 migration and v0.3.9 regression coverage
+
+### Safety / behavior
+
+- Official severe-weather takeovers remain higher priority than operator Studio takeovers
+- Local on the 8s is aborted when an operator takeover starts so picture and narration cannot diverge
+- Manual takeover state is runtime-only and is not restored after a process/container restart
+
+### Validation
+
+- 79 automated tests plus 49 render subtests pass
+- Python compilation, Studio JavaScript syntax, Docker Compose parsing, and browser-based Studio layout QA pass
+
+## 0.3.8
+
+- Added Broadcast Motion 2.0 and automatic desk-aware transition resolution
+- Added RWN logo wipe and network panel-push transition
+- Added Severe angular, Flood waterline, Winter ice-shard, Heat shimmer, Wildfire smoke-dissolve, and Tropical radar-sweep transitions
+- Added subtle desk-aware screen-entry animation
+- Severe-warning takeovers can hard-cut immediately, bypassing decorative transitions
+- Added Admin motion controls and Schema 26 migration
+- Preserved all v0.3.7 event-desk identities, Studio rundowns, Story Engine behavior, and channel configuration
+
+## 0.3.7
+
+### Added
+
+- RWN Event Channel Identity system with six dedicated visual packages: Severe, Flood, Winter, Heat, Wildfire/Smoke, and Tropical
+- Central `app.event_identity` resolver so specialty channels share renderer components while inheriting the correct desk package
+- Purpose-built event palettes, secondary accents, desk strap lines, and background motifs
+- Dedicated event header treatment and specialty-channel footer bug
+- Event-aware lower-third data ribbons with event-relevant metrics
+- Event Summary 2.0 with RWN hazard artwork, official alert presentation, and event-specific measured/forecast metrics
+- Admin controls for event identity, individual desks, background motifs, and direct desk previews
+- `tools/render_v037_previews.py` for reproducible 720p/1080p event-package QA
+- Schema 25 migration and v0.3.7 regression coverage
+
+### Changed
+
+- Severe channel and Tornado event channels share the Severe Weather Center identity
+- Flood, Winter, Heat, and Wildfire event channels now inherit dedicated desk styling across their existing rundowns
+- Tropics Watch now uses the Tropical desk identity across NHC update, track, local-impact, and shared local screens
+- Dedicated desk backgrounds suppress the normal condition-responsive background overlay so event identities remain visually coherent
+- Ordinary local/ZIP channels retain their configured station theme even when the Weather Story Engine identifies a hazard
+- Docker image tag, API/service metadata, XMLTV generator, backup/diagnostic names, user agents, and Admin UI identify v0.3.7
+
+### Validation
+
+- 69 automated tests plus 31 render subtests pass
+- Python compilation, Admin JavaScript syntax, and Docker Compose validation pass
+- 720p and 1080p visual QA covers all six dedicated desks plus Event Summary/Tropical Update presentations
+
+
+## 0.3.6
+
+### Added
+
+- RWN Weather Story Engine with scored classification for quiet, rain, storms, severe, heat, cold, winter, flood, wind, air quality, tropical, and wildfire/smoke situations
+- Structured NOW / NEXT / LATER / CONTEXT programming blocks for each story
+- Supporting-story merge so secondary meaningful hazards remain in the adaptive rundown
+- Ordinary-story hold window to reduce threshold chatter without holding cleared high-impact official stories
+- **The Weather Story** broadcast slide with reason, evidence, and program-block preview
+- Story-aware lower-third data ribbon
+- `/api/story` status endpoint and story metadata in rundown/status APIs
+- Weather Story Director panel in WeatherStream Studio, including Load Automatic Story
+- Active Story panel on the Broadcast Dashboard
+- Story Engine Admin controls and Story Brief duration control
+- Schema 24 migration and v0.3.6 regression coverage
+
+### Changed
+
+- Smart programming now composes an adaptive local rundown when Story Engine is enabled instead of only promoting individual forecast slides
+- Published Studio sequences remain an explicit override of automatic story composition
+- Existing Forecast Graphics 2.0 secondary signals are preserved as supporting story products
+- Configuration slide validation now includes all v0.3.2–v0.3.6 products in one complete registry
+- Docker image tag, service/API metadata, XMLTV generator metadata, backup/diagnostic names, and admin UI identify v0.3.6
+
+### Validation
+
+- Full Python regression suite passes
+- Dedicated Story Engine classification, migration, stabilization, manual-override, composition, and rendering tests pass
+- 720p and 1080p visual QA covers quiet, rain, storms, severe, heat, wind, AQI, and story-aware Current Conditions ribbon states
+
+## 0.3.5
+
+### Added
+
+- Nearby NWS station discovery and latest-observation ingestion for current conditions
+- Field-by-field observed/current merge with Open-Meteo fallback
+- Observation metadata in local SQLite history: source, station ID, dew point, and visibility
+- Deduplication of repeated station timestamps
+- **Today So Far** observational summary screen
+- **Past 24 Hours** temperature/pressure history screen
+- **Air Quality** screen using zero-configuration Open-Meteo/CAMS modeled U.S. AQI guidance
+- **Local Rivers & Streams** screen using the modern USGS Water Data OGC API
+- Configurable USGS radius, gauge count, and trend window
+- **Climate Context** screen with optional NOAA NCEI 1991–2020 daily normals
+- Explicit local 30-day context fallback when no official climate station is configured
+- Local-data Admin controls, Studio slides, previews, durations, source refresh aliases, and event-channel integration
+- Schema 23 migration and v0.3.5 regression coverage
+
+### Changed
+
+- Current Conditions can use real NWS observations as the preferred current-condition source
+- Current Conditions can display observed dew point and visibility
+- History retains actual observation timestamps instead of duplicating every refresh as a new observation
+- Flood channels include local USGS river gauges; Heat and Wildfire channels gain relevant local-data products
+- Air-quality and river screens explicitly distinguish modeled/provisional information from official warning or flood-stage determinations
+
+### Validation
+
+- 57 automated tests plus 18 render subtests pass
+- Python compilation, Admin JavaScript syntax, and Docker Compose YAML validation pass
+- New local-data graphics validated at 1280×720 and 1920×1080
+
 ## 0.3.4
 
 ### Added

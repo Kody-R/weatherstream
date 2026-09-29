@@ -73,7 +73,7 @@ def _fixture(width: int = 1280, height: int = 720):
 class V031VisualSystemTests(unittest.TestCase):
     def test_visual_system_defaults_survive_schema_21(self):
         visual = DEFAULT_SETTINGS["presentation"]["visual_system"]
-        self.assertEqual(DEFAULT_SETTINGS["version"], 22)
+        self.assertEqual(DEFAULT_SETTINGS["version"], 27)
         self.assertTrue(visual["enabled"])
         self.assertEqual(visual["footer_mode"], "data_ribbon")
 

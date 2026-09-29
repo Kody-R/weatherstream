@@ -34,7 +34,7 @@ class RevisionedSettingsTests(unittest.TestCase):
             settings_path.write_text(json.dumps({"version": 15, "station_name": "Existing Station", "notifications": {"events": ["severe", "source"]}}), encoding="utf-8")
             with patch("app.config.CONFIG_DIR", root), patch("app.config.SETTINGS_PATH", settings_path):
                 settings = ConfigStore().get()
-            self.assertEqual(settings["version"], 22)
+            self.assertEqual(settings["version"], 27)
             self.assertEqual(settings["station_name"], "Existing Station")
             self.assertFalse(settings["notifications"]["enabled"])
             self.assertEqual(settings["notifications"]["events"], ["severe", "source"])
@@ -52,7 +52,7 @@ class RevisionedSettingsTests(unittest.TestCase):
             settings_path.write_text(json.dumps({"version": 16, "video": {"encoder": "qsv"}}), encoding="utf-8")
             with patch("app.config.CONFIG_DIR", root), patch("app.config.SETTINGS_PATH", settings_path):
                 settings = ConfigStore().get()
-            self.assertEqual(settings["version"], 22)
+            self.assertEqual(settings["version"], 27)
             self.assertEqual(settings["video"]["encoder"], "qsv")
             self.assertEqual(settings["video"]["encoder_device"], "auto")
 
