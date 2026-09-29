@@ -13,7 +13,7 @@ CONFIG_DIR = Path(os.environ.get("WEATHERSTREAM_CONFIG", "/config"))
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 18,
+    "version": 22,
     "station_name": "Roller Weather Network",
     "station_callsign": "RWN",
     "station_slogan": "Local Weather • Radar • Alerts • 24 Hours",
@@ -39,16 +39,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "tropics_enabled": True,
         "zip_sequence": [
             "station_id", "current", "condition_focus", "today", "nws_forecast",
-            "temperature_trend", "hourly", "precipitation", "storm_outlook",
-            "spc_outlook", "seven_day", "weather_history", "almanac"
+            "day_ahead", "temperature_trend", "hourly", "humidity_outlook", "wind_outlook",
+            "precipitation", "rain_accumulation", "storm_outlook", "spc_outlook",
+            "seven_day", "weather_history", "almanac"
         ],
         "radar_sequence": [
-            "station_id", "radar_local", "map_engine", "radar_regional", "regional_map",
-            "map_satellite", "map_lightning", "radar_wide", "storm_outlook", "spc_outlook"
+            "station_id", "radar_local", "hazard_map", "map_engine", "spc_map", "spc_hazards", "radar_regional",
+            "surface_map", "qpf_map", "regional_map", "map_satellite", "map_lightning",
+            "radar_wide", "storm_outlook", "spc_outlook"
         ],
         "severe_idle_sequence": [
-            "station_id", "current", "spc_outlook", "storm_outlook",
-            "radar_local", "regional_map", "radar_regional"
+            "station_id", "current", "spc_outlook", "spc_map", "spc_hazards", "storm_outlook",
+            "hazard_map", "radar_local", "surface_map", "radar_regional"
         ],
         "tropics_sequence": ["tropical_update", "tropical_systems", "tropical_track", "tropical_local", "radar_wide"],
         "max_zip_channels": 12,
@@ -67,9 +69,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "cooldown_seconds": 7200,
         "types": {"tornado": True, "flood": True, "winter": True, "wildfire": True, "heat": True},
         "sequences": {
-            "tornado": ["event_summary", "alert", "alert_radar", "current", "radar_local", "nws_forecast"],
-            "flood": ["event_summary", "alert", "current", "nws_forecast", "radar_regional"],
-            "winter": ["event_summary", "alert", "current", "nws_forecast", "temperature_trend", "radar_regional"],
+            "tornado": ["event_summary", "alert", "alert_radar", "hazard_map", "spc_map", "spc_hazards", "current", "radar_local", "nws_forecast"],
+            "flood": ["event_summary", "alert", "qpf_map", "current", "nws_forecast", "radar_regional"],
+            "winter": ["event_summary", "alert", "surface_map", "current", "nws_forecast", "temperature_trend", "radar_regional"],
             "wildfire": ["event_summary", "alert", "current", "nws_forecast", "regional_map"],
             "heat": ["event_summary", "alert", "current", "temperature_trend", "hourly", "nws_forecast"],
         },
@@ -84,6 +86,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "engine2": {
             "enabled": True, "refresh_seconds": 300,
             "layers": {"radar": True, "satellite": True, "lightning": True, "alerts": True, "tropical_tracks": True, "city_labels": True, "boundaries": True},
+        },
+        "engine3": {
+            "enabled": True, "refresh_seconds": 300,
+            "layers": {
+                "radar": True, "satellite": True, "lightning": True, "alerts": True,
+                "tropical_tracks": True, "city_labels": True, "boundaries": True,
+                "spc_outlook": True, "spc_probabilities": True, "surface_chart": True, "qpf": True,
+            },
         },
     },
     "studio": {
@@ -119,6 +129,27 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "storm_threshold": 15,
         "heat_threshold": 95,
         "cold_threshold": 32,
+        "wind_threshold": 25,
+        "humid_dewpoint_threshold": 65,
+        "dry_dewpoint_threshold": 35,
+        "smart_story_ordering": True,
+    },
+    "forecast_graphics": {
+        "enabled": True,
+        "day_ahead_hours": 24,
+        "wind_outlook_enabled": True,
+        "humidity_outlook_enabled": True,
+        "rain_accumulation_enabled": True,
+        "nws_summary_enabled": True,
+    },
+    "icon_system": {
+        "enabled": True,
+        "style": "rwn_classic",
+        "animation_enabled": True,
+        "animation_speed": 1.7,
+        "metric_icons": True,
+        "alert_icons": True,
+        "hero_icons": True,
     },
     "dayparts": {
         "enabled": True,
@@ -127,10 +158,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "evening_start": 17,
         "overnight_start": 22,
         "sequences": {
-            "morning": ["station_id", "current", "condition_focus", "today", "temperature_trend", "hourly", "radar_local", "regional_map", "seven_day", "weather_history", "almanac"],
-            "daytime": ["station_id", "current", "condition_focus", "today", "temperature_trend", "hourly", "precipitation", "storm_outlook", "spc_outlook", "radar_local", "nws_forecast", "regional_map", "seven_day", "weather_history"],
-            "evening": ["station_id", "current", "condition_focus", "nws_forecast", "hourly", "precipitation", "radar_local", "seven_day", "regional_map", "weather_history", "almanac"],
-            "overnight": ["station_id", "current", "condition_focus", "nws_forecast", "radar_local", "seven_day", "regional_map", "weather_history", "almanac"],
+            "morning": ["station_id", "current", "condition_focus", "today", "day_ahead", "temperature_trend", "humidity_outlook", "wind_outlook", "hourly", "radar_local", "regional_map", "seven_day", "weather_history", "almanac"],
+            "daytime": ["station_id", "current", "condition_focus", "today", "day_ahead", "temperature_trend", "hourly", "humidity_outlook", "wind_outlook", "precipitation", "rain_accumulation", "storm_outlook", "spc_outlook", "radar_local", "nws_forecast", "regional_map", "seven_day", "weather_history"],
+            "evening": ["station_id", "current", "condition_focus", "nws_forecast", "day_ahead", "hourly", "humidity_outlook", "wind_outlook", "precipitation", "rain_accumulation", "radar_local", "seven_day", "regional_map", "weather_history", "almanac"],
+            "overnight": ["station_id", "current", "condition_focus", "nws_forecast", "day_ahead", "wind_outlook", "radar_local", "seven_day", "regional_map", "weather_history", "almanac"],
         },
     },
     "cache": {
@@ -139,7 +170,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "weather_refresh_seconds": 600,
     "alert_refresh_seconds": 60,
-    "nws_user_agent": "WeatherStream/0.3.0 (Roller Weather Network local weather display)",
+    "nws_user_agent": "WeatherStream/0.3.4 (Roller Weather Network local weather display)",
     "radar": {
         "enabled": True,
         "frame_count": 8,
@@ -218,6 +249,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "allow_private_targets": False,
     },
     "presentation": {
+        "visual_system": {
+            "enabled": True,
+            "design_width": 1280,
+            "design_height": 720,
+            "footer_mode": "data_ribbon",
+            "show_source_badges": True,
+            "show_freshness": True,
+            "condition_backgrounds": True,
+        },
         "transition": "crossfade",
         "transition_seconds": 0.75,
         "show_station_id": True,
@@ -248,8 +288,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "sequence": ["current", "today", "hourly", "radar_local", "seven_day"],
         },
         "sequence": [
-            "station_id", "current", "condition_focus", "today", "nws_forecast", "temperature_trend", "hourly", "precipitation",
-            "storm_outlook", "spc_outlook", "radar_local", "seven_day", "regional_map", "regional", "radar_regional", "weather_history", "almanac", "radar_wide",
+            "station_id", "current", "condition_focus", "today", "nws_forecast", "day_ahead", "temperature_trend", "hourly",
+            "humidity_outlook", "wind_outlook", "precipitation", "rain_accumulation", "storm_outlook", "spc_outlook", "radar_local",
+            "seven_day", "regional_map", "regional", "radar_regional", "weather_history", "almanac", "radar_wide",
         ],
     },
     "slides": {
@@ -257,8 +298,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "current": 12,
         "today": 12,
         "nws_forecast": 16,
+        "day_ahead": 16,
         "hourly": 15,
+        "humidity_outlook": 14,
+        "wind_outlook": 14,
         "precipitation": 12,
+        "rain_accumulation": 14,
         "temperature_trend": 14,
         "storm_outlook": 14,
         "regional_map": 16,
@@ -282,6 +327,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "map_engine": 18,
         "map_satellite": 16,
         "map_lightning": 16,
+        "spc_map": 18,
+        "spc_hazards": 18,
+        "surface_map": 18,
+        "qpf_map": 18,
+        "hazard_map": 18,
     },
 }
 
@@ -486,7 +536,65 @@ class ConfigStore:
                         index=radar_sequence.index(after)+1 if after in radar_sequence else len(radar_sequence); radar_sequence.insert(index,slide)
                 merged["channels"]["radar_sequence"]=radar_sequence
 
-            merged["version"] = 18
+            if previous_version < 19:
+                # v0.3.1 introduces Visual System 2.0. Rendering stays backward-compatible
+                # while gaining a resolution-independent logical canvas and data ribbon.
+                merged["presentation"] = _deep_merge(DEFAULT_SETTINGS["presentation"], raw.get("presentation") or {})
+
+            if previous_version < 20:
+                # v0.3.2 adds Forecast Graphics 2.0. New graphics are inserted next to
+                # their closest existing forecast products without replacing custom order.
+                merged["forecast_graphics"] = _deep_merge(DEFAULT_SETTINGS["forecast_graphics"], raw.get("forecast_graphics") or {})
+                merged["smart_programming"] = _deep_merge(DEFAULT_SETTINGS["smart_programming"], raw.get("smart_programming") or {})
+                def _insert_after(seq, item, anchor):
+                    seq = list(seq or [])
+                    if item not in seq:
+                        idx = seq.index(anchor) + 1 if anchor in seq else len(seq)
+                        seq.insert(idx, item)
+                    return seq
+                for container, key in ((merged.get("presentation") or {}, "sequence"), (merged.get("channels") or {}, "zip_sequence")):
+                    seq = list(container.get(key) or [])
+                    for item, anchor in (("day_ahead", "nws_forecast"), ("humidity_outlook", "hourly"), ("wind_outlook", "humidity_outlook"), ("rain_accumulation", "precipitation")):
+                        seq = _insert_after(seq, item, anchor)
+                    container[key] = seq
+                dayparts = (merged.get("dayparts") or {}).get("sequences") or {}
+                for part, seq in list(dayparts.items()):
+                    seq = _insert_after(seq, "day_ahead", "today" if "today" in seq else "nws_forecast")
+                    seq = _insert_after(seq, "humidity_outlook", "hourly")
+                    seq = _insert_after(seq, "wind_outlook", "humidity_outlook")
+                    if "precipitation" in seq:
+                        seq = _insert_after(seq, "rain_accumulation", "precipitation")
+                    dayparts[part] = seq
+
+            if previous_version < 21:
+                # v0.3.3 upgrades Map Engine 2.0 settings to Map Engine 3.0 and
+                # adds official NOAA geographic products without discarding custom order.
+                old_maps = raw.get("maps") if isinstance(raw.get("maps"), dict) else {}
+                inherited = old_maps.get("engine3") or old_maps.get("engine2") or {}
+                merged["maps"]["engine3"] = _deep_merge(DEFAULT_SETTINGS["maps"]["engine3"], inherited)
+                def _insert_after_v033(seq, item, anchor):
+                    seq=list(seq or [])
+                    if item not in seq:
+                        idx=seq.index(anchor)+1 if anchor in seq else len(seq)
+                        seq.insert(idx,item)
+                    return seq
+                radar_seq=list((merged.get("channels") or {}).get("radar_sequence") or [])
+                for item,anchor in (("hazard_map","radar_local"),("spc_map","map_engine"),("spc_hazards","spc_map"),("surface_map","radar_regional"),("qpf_map","surface_map")):
+                    radar_seq=_insert_after_v033(radar_seq,item,anchor)
+                merged["channels"]["radar_sequence"]=radar_seq
+                severe_seq=list((merged.get("channels") or {}).get("severe_idle_sequence") or [])
+                severe_seq=_insert_after_v033(severe_seq,"spc_map","spc_outlook")
+                severe_seq=_insert_after_v033(severe_seq,"spc_hazards","spc_map")
+                severe_seq=_insert_after_v033(severe_seq,"hazard_map","storm_outlook")
+                merged["channels"]["severe_idle_sequence"]=severe_seq
+
+            if previous_version < 22:
+                # v0.3.4 introduces the RWN Icon & Motion System. It is additive: the
+                # legacy procedural icon renderer remains as a fallback when disabled
+                # or when an asset cannot be loaded.
+                merged["icon_system"] = _deep_merge(DEFAULT_SETTINGS["icon_system"], raw.get("icon_system") or {})
+
+            merged["version"] = 22
             return merged
         except Exception:
             return copy.deepcopy(DEFAULT_SETTINGS)
@@ -525,7 +633,7 @@ class ConfigStore:
             raise ValueError("settings payload must be an object")
         with self._lock:
             self._settings = _deep_merge(DEFAULT_SETTINGS, settings)
-            self._settings["version"] = 18
+            self._settings["version"] = 21
             self._save_locked()
         return self.update_general({k:v for k,v in self._settings.items() if k != "locations"})
 
@@ -535,7 +643,7 @@ class ConfigStore:
             "public_base_url", "theme", "weather_refresh_seconds",
             "alert_refresh_seconds", "nws_user_agent", "music", "radar",
             "alerts", "presentation", "slides", "branding", "maps", "storm_guidance",
-            "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video",
+            "spc", "history", "smart_programming", "forecast_graphics", "icon_system", "dayparts", "cache", "channels", "video",
             "performance", "custom_profiles", "tts", "notifications", "tropical",
             "regions", "branding_profiles", "event_channels", "studio",
         }
@@ -543,12 +651,12 @@ class ConfigStore:
             for key in allowed:
                 if key not in payload:
                     continue
-                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications", "tropical", "regions", "branding_profiles", "event_channels", "studio"} and isinstance(payload[key], dict):
+                if key in {"music", "radar", "alerts", "presentation", "slides", "branding", "maps", "storm_guidance", "spc", "history", "smart_programming", "forecast_graphics", "icon_system", "dayparts", "cache", "channels", "video", "performance", "custom_profiles", "tts", "notifications", "tropical", "regions", "branding_profiles", "event_channels", "studio"} and isinstance(payload[key], dict):
                     self._settings[key] = _deep_merge(self._settings[key], payload[key])
                 else:
                     self._settings[key] = payload[key]
 
-            self._settings["version"] = 18
+            self._settings["version"] = 21
             self._settings["station_name"] = str(self._settings.get("station_name") or "Roller Weather Network")[:40]
             self._settings["station_callsign"] = str(self._settings.get("station_callsign") or "")[:12]
             self._settings["station_slogan"] = str(self._settings.get("station_slogan") or "")[:64]
@@ -648,6 +756,12 @@ class ConfigStore:
             layers = engine2.get("layers") if isinstance(engine2.get("layers"), dict) else {}
             engine2["layers"] = {key: bool(layers.get(key, default)) for key, default in DEFAULT_SETTINGS["maps"]["engine2"]["layers"].items()}
             maps["engine2"] = engine2
+            engine3 = _deep_merge(DEFAULT_SETTINGS["maps"]["engine3"], maps.get("engine3") or engine2)
+            engine3["enabled"] = bool(engine3.get("enabled", True))
+            engine3["refresh_seconds"] = _clamp_int(engine3.get("refresh_seconds"), 120, 3600, 300)
+            layers3 = engine3.get("layers") if isinstance(engine3.get("layers"), dict) else {}
+            engine3["layers"] = {key: bool(layers3.get(key, default)) for key, default in DEFAULT_SETTINGS["maps"]["engine3"]["layers"].items()}
+            maps["engine3"] = engine3
             self._settings["maps"] = maps
 
             storm = self._settings.get("storm_guidance") or {}
@@ -682,7 +796,30 @@ class ConfigStore:
             smart["storm_threshold"] = _clamp_int(smart.get("storm_threshold"), 0, 100, 15)
             smart["heat_threshold"] = _clamp_int(smart.get("heat_threshold"), 70, 130, 95)
             smart["cold_threshold"] = _clamp_int(smart.get("cold_threshold"), -40, 60, 32)
+            smart["wind_threshold"] = _clamp_int(smart.get("wind_threshold"), 5, 100, 25)
+            smart["humid_dewpoint_threshold"] = _clamp_int(smart.get("humid_dewpoint_threshold"), 45, 80, 65)
+            smart["dry_dewpoint_threshold"] = _clamp_int(smart.get("dry_dewpoint_threshold"), 0, 55, 35)
+            smart["smart_story_ordering"] = bool(smart.get("smart_story_ordering", True))
             self._settings["smart_programming"] = smart
+
+            forecast_graphics = _deep_merge(DEFAULT_SETTINGS["forecast_graphics"], self._settings.get("forecast_graphics") or {})
+            forecast_graphics["enabled"] = bool(forecast_graphics.get("enabled", True))
+            forecast_graphics["day_ahead_hours"] = _clamp_int(forecast_graphics.get("day_ahead_hours"), 12, 24, 24)
+            forecast_graphics["wind_outlook_enabled"] = bool(forecast_graphics.get("wind_outlook_enabled", True))
+            forecast_graphics["humidity_outlook_enabled"] = bool(forecast_graphics.get("humidity_outlook_enabled", True))
+            forecast_graphics["rain_accumulation_enabled"] = bool(forecast_graphics.get("rain_accumulation_enabled", True))
+            forecast_graphics["nws_summary_enabled"] = bool(forecast_graphics.get("nws_summary_enabled", True))
+            self._settings["forecast_graphics"] = forecast_graphics
+
+            icon_system = _deep_merge(DEFAULT_SETTINGS["icon_system"], self._settings.get("icon_system") or {})
+            icon_system["enabled"] = bool(icon_system.get("enabled", True))
+            icon_system["style"] = "rwn_classic"
+            icon_system["animation_enabled"] = bool(icon_system.get("animation_enabled", True))
+            icon_system["animation_speed"] = _clamp_float(icon_system.get("animation_speed"), 0.25, 4.0, 1.7)
+            icon_system["metric_icons"] = bool(icon_system.get("metric_icons", True))
+            icon_system["alert_icons"] = bool(icon_system.get("alert_icons", True))
+            icon_system["hero_icons"] = bool(icon_system.get("hero_icons", True))
+            self._settings["icon_system"] = icon_system
 
             dayparts = self._settings.get("dayparts") or {}
             dayparts = _deep_merge(DEFAULT_SETTINGS["dayparts"], dayparts)
@@ -834,12 +971,12 @@ class ConfigStore:
                 "radar", "radar_local", "radar_regional", "radar_wide", "seven_day", "regional", "almanac",
                 "alert", "alert_radar", "temperature_trend", "storm_outlook", "regional_map",
                 "condition_focus", "weather_history", "spc_outlook", "tropical_update", "tropical_systems", "tropical_track", "tropical_local",
-                "event_summary", "map_engine", "map_satellite", "map_lightning",
+                "event_summary", "map_engine", "map_satellite", "map_lightning", "spc_map", "spc_hazards", "surface_map", "qpf_map", "hazard_map",
             }
             channels = self._settings.get("channels") or {}
             local_valid = valid_slides - {"alert", "alert_radar", "radar", "radar_local", "radar_regional", "radar_wide", "regional_map", "event_summary"}
-            radar_valid = {"station_id", "radar_local", "radar_regional", "radar_wide", "regional_map", "map_engine", "map_satellite", "map_lightning", "storm_outlook", "spc_outlook", "current", "alert", "alert_radar"}
-            severe_valid = {"station_id", "current", "spc_outlook", "storm_outlook", "radar_local", "radar_regional", "radar_wide", "regional_map", "map_engine", "map_lightning", "alert", "alert_radar", "nws_forecast"}
+            radar_valid = {"station_id", "radar_local", "radar_regional", "radar_wide", "regional_map", "map_engine", "map_satellite", "map_lightning", "spc_map", "spc_hazards", "surface_map", "qpf_map", "hazard_map", "storm_outlook", "spc_outlook", "current", "alert", "alert_radar"}
+            severe_valid = {"station_id", "current", "spc_outlook", "spc_map", "spc_hazards", "storm_outlook", "hazard_map", "radar_local", "radar_regional", "radar_wide", "regional_map", "map_engine", "surface_map", "qpf_map", "map_lightning", "alert", "alert_radar", "nws_forecast"}
             tropics_valid = {"station_id", "tropical_update", "tropical_systems", "tropical_track", "tropical_local", "radar_wide", "radar_regional", "regional_map", "map_satellite", "map_engine", "current"}
             channels["zip_sequence"] = [x for x in (channels.get("zip_sequence") or []) if x in local_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["zip_sequence"])
             channels["radar_sequence"] = [x for x in (channels.get("radar_sequence") or []) if x in radar_valid] or copy.deepcopy(DEFAULT_SETTINGS["channels"]["radar_sequence"])
@@ -859,6 +996,16 @@ class ConfigStore:
             self._settings["dayparts"] = dayparts
 
             pres = self._settings["presentation"]
+            visual = pres.get("visual_system") if isinstance(pres.get("visual_system"), dict) else {}
+            visual = _deep_merge(DEFAULT_SETTINGS["presentation"]["visual_system"], visual)
+            visual["enabled"] = bool(visual.get("enabled", True))
+            visual["design_width"] = _clamp_int(visual.get("design_width"), 960, 1920, 1280)
+            visual["design_height"] = _clamp_int(visual.get("design_height"), 540, 1080, 720)
+            visual["footer_mode"] = visual.get("footer_mode") if visual.get("footer_mode") in {"data_ribbon", "crawl"} else "data_ribbon"
+            visual["show_source_badges"] = bool(visual.get("show_source_badges", True))
+            visual["show_freshness"] = bool(visual.get("show_freshness", True))
+            visual["condition_backgrounds"] = bool(visual.get("condition_backgrounds", True))
+            pres["visual_system"] = visual
             valid_transitions = {
                 "cut", "crossfade", "wipe", "wipe_vertical", "slide_left", "slide_up",
                 "venetian", "dissolve", "pixel_dissolve", "crt_fade",

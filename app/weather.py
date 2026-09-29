@@ -79,8 +79,8 @@ def fetch_forecast(location: dict[str, Any], client: httpx.Client | None = None)
         ]),
         "hourly": ",".join([
             "temperature_2m", "apparent_temperature", "precipitation_probability",
-            "precipitation", "weather_code", "relative_humidity_2m", "wind_speed_10m",
-            "wind_gusts_10m", "cape", "lifted_index",
+            "precipitation", "weather_code", "relative_humidity_2m", "cloud_cover",
+            "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "cape", "lifted_index",
         ]),
         "daily": ",".join([
             "weather_code", "temperature_2m_max", "temperature_2m_min",
@@ -149,7 +149,7 @@ def fetch_storm_guidance(location: dict[str, Any], client: httpx.Client | None =
 
 def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> dict[str, Any]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.0 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.4 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     lat = float(location["latitude"])
@@ -184,6 +184,9 @@ def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.
             "windDirection": p.get("windDirection") or "",
             "shortForecast": p.get("shortForecast") or "",
             "detailedForecast": p.get("detailedForecast") or "",
+            "precipitationProbability": ((p.get("probabilityOfPrecipitation") or {}).get("value")),
+            "relativeHumidity": ((p.get("relativeHumidity") or {}).get("value")),
+            "dewpointC": ((p.get("dewpoint") or {}).get("value")),
         })
     return {
         "periods": clean_periods,
@@ -195,7 +198,7 @@ def fetch_nws_forecast(location: dict[str, Any], user_agent: str, client: httpx.
 
 def fetch_alerts(location: dict[str, Any], user_agent: str, client: httpx.Client | None = None) -> list[dict[str, Any]]:
     headers = {
-        "User-Agent": user_agent or "WeatherStream/0.3.0 (Roller Weather Network local weather display)",
+        "User-Agent": user_agent or "WeatherStream/0.3.4 (Roller Weather Network local weather display)",
         "Accept": "application/geo+json",
     }
     point = f"{float(location['latitude']):.4f},{float(location['longitude']):.4f}"

@@ -17,6 +17,7 @@ from app.events import EVENT_TYPES
 from app.network import apply_region_identity, region_for_location
 from app.radar import latlon_to_world
 from app.studio import active_sequence, bumper
+from app.iconography import condition_icon as rwn_condition_icon, metric_icon as rwn_metric_icon, alert_icon as rwn_alert_icon, paste as paste_rwn_icon
 
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -125,7 +126,18 @@ def round_rect(draw: ImageDraw.ImageDraw, xy, radius, fill, outline=None, width=
     draw.rounded_rectangle(xy, radius=radius, fill=fill, outline=outline, width=width)
 
 
-def draw_weather_icon(draw: ImageDraw.ImageDraw, code: int | None, x: int, y: int, scale: float, c: dict[str, str], *, is_night: bool = False) -> None:
+def draw_weather_icon(draw: ImageDraw.ImageDraw, code: int | None, x: int, y: int, scale: float, c: dict[str, str], *, is_night: bool = False, icon_cfg: dict[str, Any] | None = None, now: float | None = None) -> None:
+    icon_cfg = icon_cfg or {}
+    if icon_cfg.get("enabled", True):
+        px = max(48, int(round(180 * scale)))
+        icon = rwn_condition_icon(
+            code, pixels=px, is_night=is_night,
+            animate=bool(icon_cfg.get("animation_enabled", True)),
+            speed=float(icon_cfg.get("animation_speed", 1.7) or 1.7), now=now,
+        )
+        target = getattr(draw, "_image", None)
+        if target is not None and paste_rwn_icon(target, icon, x, y):
+            return
     code = int(code) if code is not None else 0
     sun = code in {0, 1}
     cloud = code in {1, 2, 3, 45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99}
@@ -213,6 +225,114 @@ class WeatherRenderer:
         if accent: colors["accent"] = accent; colors["title"] = accent
         return colors
 
+    def _visual(self, settings: dict[str, Any]) -> dict[str, Any]:
+        return ((settings.get("presentation") or {}).get("visual_system") or {})
+
+    def _design_dimensions(self, settings: dict[str, Any]) -> tuple[int, int]:
+        # Visual System 2.0 uses a stable broadcast design canvas. The completed
+        # frame is scaled once to the configured encoder resolution, preserving
+        # layout proportions at 720p, 1080p, 1440p, and 4K.
+        if self._visual(settings).get("enabled", True):
+            return (1280, 720)
+        return (int(settings["video"].get("width", 1280)), int(settings["video"].get("height", 720)))
+
+    def _scale_frame(self, img: Image.Image, settings: dict[str, Any]) -> Image.Image:
+        target = (int(settings["video"].get("width", 1280)), int(settings["video"].get("height", 720)))
+        if img.size == target:
+            return img
+        return img.resize(target, Image.Resampling.LANCZOS)
+
+    def _freshness_label(self, stamp: Any, now: float | None = None) -> str:
+        if not stamp:
+            return "UPDATE TIME UNKNOWN"
+        try:
+            when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=dt.timezone.utc)
+            current = dt.datetime.fromtimestamp(now, dt.timezone.utc) if now else dt.datetime.now(dt.timezone.utc)
+            age = max(0, int((current - when.astimezone(dt.timezone.utc)).total_seconds()))
+            if age < 60:
+                return "UPDATED JUST NOW"
+            if age < 3600:
+                return f"UPDATED {age // 60} MIN AGO"
+            return f"UPDATED {age // 3600} HR AGO"
+        except Exception:
+            return "UPDATED"
+
+    def _source_badge(self, draw: ImageDraw.ImageDraw, p: dict[str, Any], c: dict[str, str], settings: dict[str, Any], source: str = "OPEN-METEO", *, right: int = 1226, y: int = 98) -> None:
+        visual = self._visual(settings)
+        if not visual.get("show_source_badges", True):
+            return
+        freshness = self._freshness_label(p.get("fetched_at")) if visual.get("show_freshness", True) else ""
+        label = source if not freshness else f"{source}  •  {freshness}"
+        f = font(12, bold=True, mono=True)
+        box = draw.textbbox((0, 0), label, font=f)
+        bw = min(420, max(180, box[2]-box[0] + 28))
+        x1 = right - bw
+        round_rect(draw, (x1, y, right, y+28), 7, c["panel2"], outline=c["muted"], width=1)
+        draw.text((right-12, y+14), label, font=f, fill=c["muted"], anchor="rm")
+
+    def _metric_tile(self, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], label: str, value: str, c: dict[str, str], detail: str = "", *, icon_name: str | None = None, icon_enabled: bool = True) -> None:
+        x1, y1, x2, y2 = box
+        round_rect(draw, box, 13, c["panel"], outline=c["panel2"], width=2)
+        label_x = x1 + 18
+        if icon_name and icon_enabled:
+            target = getattr(draw, "_image", None)
+            if target is not None and paste_rwn_icon(target, rwn_metric_icon(icon_name, 30), x1+15, y1+10):
+                label_x = x1 + 52
+        draw.text((label_x, y1+14), label.upper(), font=font(15, bold=True, mono=True), fill=c["muted"])
+        size = 30 if len(value) < 15 else 23
+        draw.text((x1+18, y1+43), value, font=font(size, bold=True), fill=c["text"])
+        if detail:
+            draw.text((x1+18, y2-24), detail[:34], font=font(13, mono=True), fill=c["accent"])
+
+    def _condition_story(self, cur: dict[str, Any]) -> tuple[str, str]:
+        t = cur.get("temperature_2m")
+        rh = cur.get("relative_humidity_2m")
+        gust = cur.get("wind_gusts_10m")
+        dew = dew_point_f(t, rh)
+        hi = heat_index_f(t, rh)
+        wc = wind_chill_f(t, cur.get("wind_speed_10m"))
+        try:
+            if hi is not None and float(hi) >= 100:
+                return "HEAT STRESS", f"Heat index near {hi:.0f}°"
+            if wc is not None and float(wc) <= 25:
+                return "BITTER COLD", f"Wind chill near {wc:.0f}°"
+            if gust is not None and float(gust) >= 30:
+                return "GUSTY", f"Gusts up to {float(gust):.0f} mph"
+            if dew is not None and dew >= 70:
+                return "VERY HUMID", f"Dew point {dew:.0f}°"
+            if dew is not None and dew >= 65:
+                return "HUMID", f"Dew point {dew:.0f}°"
+        except Exception:
+            pass
+        desc = str(cur.get("description") or "Current weather")
+        return "RIGHT NOW", desc
+
+    def _paint_condition_overlay(self, img: Image.Image, p: dict[str, Any], settings: dict[str, Any]) -> None:
+        if not self._visual(settings).get("condition_backgrounds", True):
+            return
+        cur = p.get("current") or {}
+        try: code = int(cur.get("weather_code"))
+        except Exception: code = -1
+        is_day = bool(cur.get("is_day", 1))
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        w, h = img.size
+        if not is_day:
+            od.rectangle((0, 88, w, h-86), fill=(0, 4, 20, 38))
+        if code in {95, 96, 99}:
+            od.rectangle((0, 88, w, h-86), fill=(20, 12, 35, 48))
+        elif code in {51,53,55,56,57,61,63,65,66,67,80,81,82}:
+            od.rectangle((0, 88, w, h-86), fill=(8, 24, 42, 30))
+        elif code in {71,73,75,77,85,86}:
+            od.rectangle((0, 88, w, h-86), fill=(70, 100, 120, 22))
+        elif code in {0,1} and is_day:
+            # soft warm glow, kept deliberately subtle so theme identity remains intact
+            for r, a in ((260, 12), (190, 16), (125, 20)):
+                od.ellipse((w-r-40, 100-r//3, w+40, 100+r*2), fill=(255, 211, 71, a))
+        img.paste(overlay, (0, 0), overlay)
+
     def _primary(self, settings: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
         pid = settings.get("primary_location_id")
         return snapshot.get("locations", {}).get(pid)
@@ -294,6 +414,41 @@ class WeatherRenderer:
             except Exception: pass
         return max(nums) if nums else 0.0
 
+    def _sum_next(self, hourly: dict[str, Any], key: str, count: int = 24) -> float:
+        vals = hourly.get(key) or []; times = hourly.get("time") or []; start = 0
+        if times:
+            local_now = dt.datetime.now()
+            for i, value in enumerate(times):
+                try:
+                    stamp = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                    if stamp.tzinfo is not None: stamp = stamp.astimezone().replace(tzinfo=None)
+                    if stamp >= local_now.replace(minute=0, second=0, microsecond=0): start = i; break
+                except Exception: continue
+        total = 0.0
+        for value in vals[start:start+count]:
+            try: total += max(0.0, float(value))
+            except Exception: pass
+        return total
+
+    def _dewpoint_range_next(self, hourly: dict[str, Any], count: int = 12) -> tuple[float | None, float | None]:
+        temps=hourly.get("temperature_2m") or []; rhs=hourly.get("relative_humidity_2m") or []; times=hourly.get("time") or []
+        start=0
+        if times:
+            now=dt.datetime.now()
+            for i,value in enumerate(times):
+                try:
+                    stamp=dt.datetime.fromisoformat(str(value).replace("Z","+00:00"))
+                    if stamp.tzinfo is not None: stamp=stamp.astimezone().replace(tzinfo=None)
+                    if stamp >= now.replace(minute=0,second=0,microsecond=0): start=i; break
+                except Exception: continue
+        vals=[]
+        for i in range(start,min(len(times) if times else max(len(temps),len(rhs)),start+count)):
+            try:
+                dp=dew_point_f(temps[i],rhs[i])
+                if dp is not None: vals.append(float(dp))
+            except Exception: pass
+        return (min(vals),max(vals)) if vals else (None,None)
+
     def _smart_wanted(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float) -> list[str]:
         pres = settings.get("presentation") or {}; smart = settings.get("smart_programming") or {}; dayparts = settings.get("dayparts") or {}
         if dayparts.get("enabled", True):
@@ -301,17 +456,39 @@ class WeatherRenderer:
             wanted = list(((dayparts.get("sequences") or {}).get(part)) or (pres.get("sequence") or []))
         else:
             wanted = list(pres.get("sequence") or [])
+
+        graphics=settings.get("forecast_graphics") or {}
+        if not graphics.get("enabled", True):
+            wanted=[x for x in wanted if x not in {"day_ahead","humidity_outlook","wind_outlook","rain_accumulation"}]
+        else:
+            if not graphics.get("wind_outlook_enabled",True): wanted=[x for x in wanted if x != "wind_outlook"]
+            if not graphics.get("humidity_outlook_enabled",True): wanted=[x for x in wanted if x != "humidity_outlook"]
+            if not graphics.get("rain_accumulation_enabled",True): wanted=[x for x in wanted if x != "rain_accumulation"]
         if not smart.get("enabled", True): return wanted
+
         primary = self._primary(settings, snapshot) or {}; hourly = primary.get("hourly") or {}
         rain = self._max_next(hourly, "precipitation_probability", 12)
+        rain_total = self._sum_next(hourly, "precipitation", 24)
+        gust = self._max_next(hourly, "wind_gusts_10m", 12)
+        low_dew, high_dew = self._dewpoint_range_next(hourly, 12)
         storm_hourly = ((snapshot.get("storm_guidance") or {}).get("hourly") or {})
         storm = self._max_next(storm_hourly, "thunderstorm_probability", 12)
         spc = settings.get("_spc_outlook") or {}
         rank = int(((spc.get("day1") or {}).get("rank")) or 0)
         min_risk = {"TSTM":1,"MRGL":2,"SLGT":3,"ENH":4,"MDT":5,"HIGH":6}.get((settings.get("spc") or {}).get("minimum_smart_risk", "MRGL"), 2)
-        if rain < int(smart.get("rain_threshold", 20)):
+        rain_threshold=int(smart.get("rain_threshold",20)); storm_threshold=int(smart.get("storm_threshold",15)); wind_threshold=int(smart.get("wind_threshold",25))
+        humid_threshold=float(smart.get("humid_dewpoint_threshold",65)); dry_threshold=float(smart.get("dry_dewpoint_threshold",35))
+
+        if rain < rain_threshold:
             wanted = [x for x in wanted if x != "precipitation"]
-        if storm < int(smart.get("storm_threshold", 15)):
+        if rain_total < 0.05:
+            wanted = [x for x in wanted if x != "rain_accumulation"]
+        if gust < wind_threshold:
+            wanted = [x for x in wanted if x != "wind_outlook"]
+        humidity_notable = (high_dew is not None and high_dew >= humid_threshold) or (low_dew is not None and low_dew <= dry_threshold)
+        if not humidity_notable:
+            wanted = [x for x in wanted if x != "humidity_outlook"]
+        if storm < storm_threshold:
             wanted = [x for x in wanted if x != "storm_outlook"]
         if rank < min_risk:
             wanted = [x for x in wanted if x != "spc_outlook"]
@@ -319,6 +496,30 @@ class WeatherRenderer:
             idx = wanted.index("radar_local") if "radar_local" in wanted else min(5, len(wanted)); wanted.insert(idx, "spc_outlook")
         if not (settings.get("history") or {}).get("enabled", True):
             wanted = [x for x in wanted if x != "weather_history"]
+
+        # Forecast Graphics 2.0 turns the rundown into a simple weather story. We do
+        # not delete user-selected graphics here; notable products are moved near the
+        # top so the channel explains the important signal before the long-range recap.
+        if smart.get("smart_story_ordering", True):
+            def promote(item: str, anchor: str) -> None:
+                nonlocal wanted
+                if item not in wanted: return
+                wanted.remove(item)
+                if anchor in wanted: wanted.insert(wanted.index(anchor)+1,item)
+                else: wanted.insert(min(2,len(wanted)),item)
+            if rank >= min_risk or storm >= storm_threshold:
+                promote("spc_outlook","current")
+                promote("storm_outlook","spc_outlook" if "spc_outlook" in wanted else "current")
+                if gust >= wind_threshold: promote("wind_outlook","storm_outlook" if "storm_outlook" in wanted else "current")
+                if rain >= rain_threshold: promote("precipitation","storm_outlook" if "storm_outlook" in wanted else "current")
+                if rain_total >= 0.05: promote("rain_accumulation","precipitation" if "precipitation" in wanted else "current")
+            elif rain >= rain_threshold:
+                promote("precipitation","hourly" if "hourly" in wanted else "current")
+                if rain_total >= 0.05: promote("rain_accumulation","precipitation")
+            if gust >= wind_threshold and "wind_outlook" in wanted:
+                promote("wind_outlook","hourly" if "hourly" in wanted else "current")
+            if humidity_notable and "humidity_outlook" in wanted:
+                promote("humidity_outlook","hourly" if "hourly" in wanted else "current")
         return wanted
 
     def programming_status(self, settings: dict[str, Any], snapshot: dict[str, Any], now: float | None = None) -> dict[str, Any]:
@@ -377,10 +578,25 @@ class WeatherRenderer:
                 continue
             if name == "weather_history" and not (settings.get("history") or {}).get("enabled", True):
                 continue
-            engine_layers=(((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {})
-            if name == "map_engine" and not ((settings.get("maps") or {}).get("engine2") or {}).get("enabled", True): continue
+            fg = settings.get("forecast_graphics") or {}
+            if name in {"day_ahead", "humidity_outlook", "wind_outlook", "rain_accumulation"} and not fg.get("enabled", True):
+                continue
+            if name == "humidity_outlook" and not fg.get("humidity_outlook_enabled", True):
+                continue
+            if name == "wind_outlook" and not fg.get("wind_outlook_enabled", True):
+                continue
+            if name == "rain_accumulation" and not fg.get("rain_accumulation_enabled", True):
+                continue
+            engine_cfg=((settings.get("maps") or {}).get("engine3") or (settings.get("maps") or {}).get("engine2") or {})
+            engine_layers=(engine_cfg.get("layers") or {})
+            if name in {"map_engine","spc_map","spc_hazards","surface_map","qpf_map","hazard_map"} and not engine_cfg.get("enabled", True): continue
             if name == "map_satellite" and not engine_layers.get("satellite", True): continue
             if name == "map_lightning" and not engine_layers.get("lightning", True): continue
+            if name == "spc_map" and not engine_layers.get("spc_outlook", True): continue
+            if name == "spc_hazards" and not engine_layers.get("spc_probabilities", True): continue
+            if name == "surface_map" and not engine_layers.get("surface_chart", True): continue
+            if name == "qpf_map" and not engine_layers.get("qpf", True): continue
+            if name == "hazard_map" and not engine_layers.get("alerts", True): continue
             if name.startswith("tropical_") and not (settings.get("tropical") or {}).get("enabled", True):
                 continue
             fallback = durations.get("radar", 16) if name.startswith("radar") or name == "alert_radar" else 10
@@ -447,22 +663,27 @@ class WeatherRenderer:
                 draw.line((0, y, w, y), fill=(15, 61, 112), width=1)
 
     def _render_slide(self, name: str, settings: dict[str, Any], snapshot: dict[str, Any], primary: dict[str, Any], now: float, progress: float) -> Image.Image:
-        w = int(settings["video"].get("width", 1280))
-        h = int(settings["video"].get("height", 720))
+        # All broadcast graphics are authored on one logical canvas and scaled once
+        # at the end. This removes the old fixed-720p limitation without forcing every
+        # individual drawing primitive to understand encoder resolution.
+        w, h = self._design_dimensions(settings)
         c = self._theme(settings)
         img = Image.new("RGB", (w, h), c["bg"])
         self._paint_background(img, c, settings, now)
+        self._paint_condition_overlay(img, primary, settings)
         draw = ImageDraw.Draw(img)
-        if name == "local8_intro":
-            self._draw_local8_intro(draw, w, h, settings, primary, c)
-        elif name == "station_id":
-            self._draw_station_id(draw, w, h, settings, primary, c, now)
+        if name == "local8_intro": self._draw_local8_intro(draw, w, h, settings, primary, c)
+        elif name == "station_id": self._draw_station_id(draw, w, h, settings, primary, c, now)
         elif name == "current": self._draw_current(draw, w, h, settings, primary, c)
         elif name == "today": self._draw_today(draw, w, h, settings, primary, c)
         elif name == "nws_forecast": self._draw_nws_forecast(draw, w, h, settings, primary, c)
+        elif name == "day_ahead": self._draw_day_ahead(draw, w, h, settings, primary, c)
         elif name == "temperature_trend": self._draw_temperature_trend(draw, w, h, settings, primary, c)
         elif name == "hourly": self._draw_hourly(draw, w, h, settings, primary, c)
+        elif name == "humidity_outlook": self._draw_humidity_outlook(draw, w, h, settings, primary, c)
+        elif name == "wind_outlook": self._draw_wind_outlook(draw, w, h, settings, primary, c)
         elif name == "precipitation": self._draw_precipitation(draw, w, h, settings, primary, c)
+        elif name == "rain_accumulation": self._draw_rain_accumulation(draw, w, h, settings, primary, c)
         elif name == "storm_outlook": self._draw_storm_outlook(draw, w, h, settings, snapshot, primary, c)
         elif name == "spc_outlook": self._draw_spc_outlook(draw, w, h, settings, primary, c)
         elif name == "tropical_update": self._draw_tropical_update(draw, w, h, settings, primary, c)
@@ -470,10 +691,13 @@ class WeatherRenderer:
         elif name == "tropical_track": self._draw_tropical_track(draw, w, h, settings, primary, c, now)
         elif name == "tropical_local": self._draw_tropical_local(draw, w, h, settings, primary, c)
         elif name == "event_summary": self._draw_event_summary(draw, w, h, settings, snapshot, primary, c)
-        elif name == "map_engine":
-            self._draw_map_engine(img, draw, w, h, settings, snapshot, primary, c, now, progress)
-        elif name in {"map_satellite", "map_lightning"}:
-            self._draw_goes_product(img, ImageDraw.Draw(img), w, h, settings, c, "satellite" if name == "map_satellite" else "lightning")
+        elif name == "map_engine": self._draw_map_engine(img, draw, w, h, settings, snapshot, primary, c, now, progress)
+        elif name == "spc_map": self._draw_official_map_product(img, draw, w, h, settings, primary, c, "spc_day1", "SPC DAY 1 OUTLOOK", "GEOGRAPHIC SEVERE WEATHER RISK")
+        elif name == "spc_hazards": self._draw_spc_hazard_probabilities(img, draw, w, h, settings, primary, c)
+        elif name == "surface_map": self._draw_official_map_product(img, draw, w, h, settings, primary, c, "wpc_surface", "DAY 1 WEATHER MAP", "FRONTS • HIGHS/LOWS • SIGNIFICANT WEATHER")
+        elif name == "qpf_map": self._draw_official_map_product(img, draw, w, h, settings, primary, c, "wpc_qpf_day1", "24-HOUR PRECIPITATION FORECAST", "WPC QUANTITATIVE PRECIPITATION FORECAST")
+        elif name == "hazard_map": self._draw_hazard_map(img, draw, w, h, settings, snapshot, primary, c, now, progress)
+        elif name in {"map_satellite", "map_lightning"}: self._draw_goes_product(img, ImageDraw.Draw(img), w, h, settings, c, "satellite" if name == "map_satellite" else "lightning")
         elif name.startswith("bumper:"): self._draw_studio_bumper(draw, w, h, settings, name.split(":", 1)[1], c)
         elif name == "condition_focus": self._draw_condition_focus(draw, w, h, settings, primary, c)
         elif name == "weather_history": self._draw_weather_history(draw, w, h, settings, primary, c)
@@ -487,7 +711,7 @@ class WeatherRenderer:
         elif name == "alert": self._draw_alert(draw, w, h, settings, snapshot, primary, c)
         self._draw_branding_logo(img, settings, name)
         self._draw_footer(ImageDraw.Draw(img), w, h, settings, snapshot, c, now)
-        return img
+        return self._scale_frame(img, settings)
 
     def _channel_context(self, location_id: str | None = None, channel_mode: str = "local") -> tuple[dict[str, Any], dict[str, Any]]:
         spc_revision = self.spc_manager.revision() if self.spc_manager and hasattr(self.spc_manager, "revision") else 0
@@ -642,9 +866,10 @@ class WeatherRenderer:
         c = self._theme(settings)
         primary = self._primary(settings, snapshot)
         if not primary:
-            out = Image.new("RGB", (w, h), c["bg"]); self._paint_background(out, c, settings, now)
-            draw = ImageDraw.Draw(out); self._draw_setup(draw, w, h, settings, c); self._draw_footer(draw, w, h, settings, snapshot, c, now)
-            return self._apply_retro_effects(out, settings, now)
+            dw, dh = self._design_dimensions(settings)
+            out = Image.new("RGB", (dw, dh), c["bg"]); self._paint_background(out, c, settings, now)
+            draw = ImageDraw.Draw(out); self._draw_setup(draw, dw, dh, settings, c); self._draw_footer(draw, dw, dh, settings, snapshot, c, now)
+            return self._apply_retro_effects(self._scale_frame(out, settings), settings, now)
 
         forced_name = str(overrides.get("force_slide") or "").strip()
         if forced_name:
@@ -680,8 +905,9 @@ class WeatherRenderer:
         settings, snapshot = self._channel_context(location_id, channel_mode); primary = self._primary(settings, snapshot)
         w = int(settings["video"].get("width", 1280)); h = int(settings["video"].get("height", 720)); c = self._theme(settings)
         if not primary:
-            out = Image.new("RGB", (w,h), c["bg"]); self._paint_background(out,c,settings,dt.datetime.now().timestamp()); d=ImageDraw.Draw(out); self._draw_setup(d,w,h,settings,c); self._draw_footer(d,w,h,settings,snapshot,c,dt.datetime.now().timestamp()); return out
-        valid = {"station_id","current","condition_focus","today","nws_forecast","temperature_trend","hourly","precipitation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar","event_summary","map_engine","map_satellite","map_lightning"}
+            dw, dh = self._design_dimensions(settings)
+            out = Image.new("RGB", (dw,dh), c["bg"]); self._paint_background(out,c,settings,dt.datetime.now().timestamp()); d=ImageDraw.Draw(out); self._draw_setup(d,dw,dh,settings,c); self._draw_footer(d,dw,dh,settings,snapshot,c,dt.datetime.now().timestamp()); return self._scale_frame(out, settings)
+        valid = {"station_id","current","condition_focus","today","nws_forecast","day_ahead","temperature_trend","hourly","humidity_outlook","wind_outlook","precipitation","rain_accumulation","storm_outlook","spc_outlook","tropical_update","tropical_systems","tropical_track","tropical_local","radar_local","radar_regional","radar_wide","seven_day","regional_map","regional","weather_history","almanac","alert","alert_radar","event_summary","map_engine","map_satellite","map_lightning","spc_map","spc_hazards","surface_map","qpf_map","hazard_map"}
         if slide_name not in valid and not slide_name.startswith("bumper:"): slide_name = "current"
         snap = snapshot
         if test_alert:
@@ -691,7 +917,8 @@ class WeatherRenderer:
             if slide_name not in {"alert","alert_radar"}: slide_name="alert"
         out=self._render_slide(slide_name,settings,snap,primary,dt.datetime.now().timestamp(),0.35)
         if test_alert:
-            d=ImageDraw.Draw(out); d.rectangle((0,88,w,126),fill="#f0c400"); d.text((w//2,107),"TEST MODE • NOT A REAL WEATHER ALERT",font=font(19,bold=True,mono=True),fill="#111111",anchor="mm")
+            d=ImageDraw.Draw(out); sx=w/1280.0; sy=h/720.0; y1=int(88*sy); y2=int(126*sy)
+            d.rectangle((0,y1,w,y2),fill="#f0c400"); d.text((w//2,int(107*sy)),"TEST MODE • NOT A REAL WEATHER ALERT",font=font(max(10,int(19*min(sx,sy))),bold=True,mono=True),fill="#111111",anchor="mm")
         return out
 
     def _pattern_mask(self, size: tuple[int, int], alpha: float, block: int) -> Image.Image:
@@ -870,7 +1097,7 @@ class WeatherRenderer:
         strap = ["LOCAL WEATHER • 24 HOURS A DAY", slogan.upper(), f"SERVING {service.upper()}"][variant]
         draw.text((cx, 238 if callsign else 220), strap[:62], font=font(22, bold=True, mono=True), fill=c["accent"], anchor="mm")
         round_rect(draw, (290, 292, w-290, 500), 24, c["panel"], outline=c["muted"], width=2)
-        draw_weather_icon(draw, cur.get("weather_code"), 350, 308, 0.85, c)
+        draw_weather_icon(draw, cur.get("weather_code"), 350, 308, 0.85, c, icon_cfg=settings.get("icon_system"))
         draw.text((615, 345), location_label(loc), font=font(31, bold=True), fill=c["text"])
         draw.text((615, 402), f"{n(cur.get('temperature_2m'),0,'°')}  {cur.get('description','')}", font=font(39, bold=True), fill=c["text"])
         date_text = dt.datetime.fromtimestamp(now).strftime("%A %B %d • %I:%M %p").upper().replace(" 0", " ")
@@ -1110,24 +1337,45 @@ class WeatherRenderer:
     def _draw_current(self, draw, w, h, settings, p, c):
         loc = p["location"]
         cur = p.get("current", {})
+        daily = p.get("daily", {})
         self._header(draw, w, "Current Conditions", location_label(loc), c)
-        draw_weather_icon(draw, cur.get("weather_code"), 72, 155, 1.28, c)
-        draw.text((330, 160), n(cur.get("temperature_2m"), 0, "°"), font=font(122, bold=True), fill=c["text"])
-        draw.text((340, 300), cur.get("description", "Weather Unavailable"), font=font(38, bold=True), fill=c["accent"])
-        draw.text((340, 358), f"Feels Like {n(cur.get('apparent_temperature'), 0, '°')}", font=font(27), fill=c["muted"])
+        self._source_badge(draw, p, c, settings)
 
-        x1, x2 = 760, 1018
-        rows = [
-            ("HUMIDITY", n(cur.get("relative_humidity_2m"), 0, "%")),
-            ("WIND", f"{cur.get('wind_cardinal', '--')} {n(cur.get('wind_speed_10m'), 0, ' mph')}"),
-            ("GUSTS", n(cur.get("wind_gusts_10m"), 0, " mph")),
-            ("PRESSURE", pressure_inhg(cur.get("surface_pressure"))),
+        # Hero condition panel.
+        round_rect(draw, (54, 132, 706, 486), 20, c["panel2"], outline=c["muted"], width=2)
+        draw_weather_icon(draw, cur.get("weather_code"), 78, 180, 1.10, c, is_night=not bool(cur.get("is_day", 1)), icon_cfg=settings.get("icon_system"))
+        draw.text((315, 155), n(cur.get("temperature_2m"), 0, "°"), font=font(108, bold=True), fill=c["text"])
+        draw.text((322, 286), str(cur.get("description") or "Weather Unavailable"), font=font(34, bold=True), fill=c["accent"])
+        draw.text((322, 338), f"Feels like {n(cur.get('apparent_temperature'), 0, '°')}", font=font(25, bold=True), fill=c["muted"])
+        story, story_detail = self._condition_story(cur)
+        round_rect(draw, (82, 416, 674, 468), 12, c["panel"], outline=c["accent"], width=2)
+        draw.text((104, 430), story, font=font(17, bold=True, mono=True), fill=c["accent"])
+        draw.text((660, 430), story_detail, font=font(18, bold=True), fill=c["text"], anchor="ra")
+
+        dew = dew_point_f(cur.get("temperature_2m"), cur.get("relative_humidity_2m"))
+        wind = f"{cur.get('wind_cardinal', '--')} {n(cur.get('wind_speed_10m'), 0, ' mph')}"
+        self._metric_tile(draw, (738, 132, 974, 286), "Humidity", n(cur.get("relative_humidity_2m"), 0, "%"), c, f"Dew point {n(dew,0,'°')}", icon_name="humidity", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
+        self._metric_tile(draw, (990, 132, 1226, 286), "Wind", wind, c, f"Gusts {n(cur.get('wind_gusts_10m'),0,' mph')}", icon_name="wind", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
+        self._metric_tile(draw, (738, 302, 974, 456), "Pressure", pressure_inhg(cur.get("surface_pressure")), c, icon_name="pressure", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
+        cloud = n(cur.get("cloud_cover"), 0, "%")
+        self._metric_tile(draw, (990, 302, 1226, 456), "Cloud Cover", cloud, c, icon_name="cloud_cover", icon_enabled=(settings.get("icon_system") or {}).get("metric_icons", True))
+
+        highs = daily.get("temperature_2m_max") or []
+        lows = daily.get("temperature_2m_min") or []
+        pops = daily.get("precipitation_probability_max") or []
+        round_rect(draw, (54, 506, 1226, 608), 16, c["panel"])
+        items = [
+            ("TODAY'S HIGH", n(highs[0] if highs else None,0,"°")),
+            ("TONIGHT'S LOW", n(lows[0] if lows else None,0,"°")),
+            ("RAIN CHANCE", n(pops[0] if pops else None,0,"%")),
+            ("WIND GUST", n(cur.get("wind_gusts_10m"),0," mph")),
         ]
-        for i, (label, value) in enumerate(rows):
-            y = 154 + i*92
-            round_rect(draw, (x1, y, w-55, y+70), 10, c["panel"])
-            draw.text((x1+22, y+13), label, font=font(21, bold=True, mono=True), fill=c["muted"])
-            draw.text((w-78, y+12), value, font=font(28, bold=True), fill=c["text"], anchor="ra")
+        cell = 1172 // 4
+        for i, (label, value) in enumerate(items):
+            x = 54 + i*cell
+            if i: draw.line((x, 520, x, 594), fill=c["panel2"], width=2)
+            draw.text((x+cell//2, 531), label, font=font(13, bold=True, mono=True), fill=c["muted"], anchor="mm")
+            draw.text((x+cell//2, 570), value, font=font(29, bold=True), fill=c["text"], anchor="mm")
 
     def _draw_today(self, draw, w, h, settings, p, c):
         loc, daily = p["location"], p.get("daily", {})
@@ -1137,7 +1385,7 @@ class WeatherRenderer:
         lows = daily.get("temperature_2m_min") or []
         pops = daily.get("precipitation_probability_max") or []
         code = codes[0] if codes else None
-        draw_weather_icon(draw, code, 92, 178, 1.45, c)
+        draw_weather_icon(draw, code, 92, 178, 1.45, c, icon_cfg=settings.get("icon_system"))
         from app.weather import describe_weather
         draw.text((365, 170), "TODAY", font=font(33, bold=True, mono=True), fill=c["accent"])
         draw.text((365, 225), describe_weather(code), font=font(48, bold=True), fill=c["text"])
@@ -1198,34 +1446,300 @@ class WeatherRenderer:
                 return False
 
     def _draw_hourly(self, draw, w, h, settings, p, c):
-        self._header(draw, w, "Hour by Hour", location_label(p["location"]), c)
+        self._header(draw, w, "Hourly Forecast", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
         hourly = p.get("hourly", {})
-        indices = self._hour_indices(p)
-        if not indices:
+        base = self._hour_indices(p)
+        if not base:
             draw.text((w//2, h//2), "Hourly forecast unavailable", font=font(36, bold=True), fill=c["text"], anchor="mm")
             return
-        card_w = 184
-        gap = 16
-        start_x = (w - (len(indices)*card_w + (len(indices)-1)*gap)) // 2
+        first = base[0]
+        times = hourly.get("time") or []
+        indices = list(range(first, min(first + 8, len(times))))
+        temps = []
+        for i in indices:
+            try: temps.append(float((hourly.get("temperature_2m") or [None]*len(times))[i]))
+            except Exception: temps.append(None)
+        valid = [x for x in temps if x is not None]
+        tmin, tmax = (min(valid), max(valid)) if valid else (0.0, 1.0)
+        if abs(tmax-tmin) < 4: tmin -= 2; tmax += 2
+
+        chart = (72, 150, 1208, 318)
+        round_rect(draw, (54, 132, 1226, 604), 18, c["panel2"], outline=c["muted"], width=1)
+        # Reference grid and smooth-looking connected temperature trend.
+        for row in range(3):
+            y = chart[1] + int((chart[3]-chart[1]) * row / 2)
+            draw.line((chart[0], y, chart[2], y), fill=c["panel"], width=1)
+        xs=[]; pts=[]
+        step=(chart[2]-chart[0])/max(1,len(indices)-1)
         for col, i in enumerate(indices):
-            x = start_x + col*(card_w+gap)
-            round_rect(draw, (x, 140, x+card_w, 550), 16, c["panel"])
+            x=int(chart[0]+col*step); xs.append(x)
+            temp=temps[col]
+            if temp is None: y=(chart[1]+chart[3])//2
+            else: y=int(chart[3]-(temp-tmin)/max(1,tmax-tmin)*(chart[3]-chart[1]))
+            pts.append((x,y))
+        if len(pts)>1: draw.line(pts, fill=c["accent"], width=5, joint="curve")
+        for col,i in enumerate(indices):
+            x,y=pts[col]
+            draw.ellipse((x-7,y-7,x+7,y+7),fill=c["accent"],outline="#ffffff",width=2)
+            try: label=dt.datetime.fromisoformat(times[i]).strftime("%I %p").lstrip("0")
+            except Exception: label="--"
+            draw.text((x, 142), label, font=font(15,bold=True,mono=True), fill=c["muted"], anchor="mm")
+            draw.text((x, max(164,y-25)), n(temps[col],0,"°"), font=font(20,bold=True), fill=c["text"], anchor="mm")
+            is_night=self._hour_is_night(p,times[i])
+            draw_weather_icon(draw,(hourly.get("weather_code") or [None]*len(times))[i],x-34,328,0.38,c,is_night=is_night,icon_cfg=settings.get("icon_system"))
+
+        # Precipitation and wind rows make the trend useful at a glance without eight repeated cards.
+        draw.text((72, 438), "RAIN", font=font(14,bold=True,mono=True), fill=c["muted"])
+        draw.text((72, 526), "WIND", font=font(14,bold=True,mono=True), fill=c["muted"])
+        for col,i in enumerate(indices):
+            x=xs[col]
+            pop=(hourly.get("precipitation_probability") or [None]*len(times))[i]
+            try: pv=max(0,min(100,float(pop)))
+            except Exception: pv=0
+            bh=int(54*pv/100)
+            draw.rounded_rectangle((x-22, 500-bh, x+22, 500), radius=6, fill=c["accent"] if pv>=40 else c["panel"])
+            draw.text((x, 510), f"{int(pv)}%", font=font(13,bold=True,mono=True), fill=c["text"], anchor="ma")
+            wind=(hourly.get("wind_speed_10m") or [None]*len(times))[i]
+            draw.text((x, 553), n(wind,0," mph"), font=font(13,bold=True,mono=True), fill=c["text"], anchor="mm")
+        draw.text((1208, 588), "TEMPERATURE TREND • RAIN CHANCE • WIND", font=font(12,bold=True,mono=True), fill=c["muted"], anchor="ra")
+
+    def _future_hour_indices(self, p: dict[str, Any], count: int = 24) -> list[int]:
+        hourly = p.get("hourly") or {}
+        times = hourly.get("time") or []
+        if not times:
+            return []
+        now = dt.datetime.now()
+        first = 0
+        for i, value in enumerate(times):
             try:
-                t = dt.datetime.fromisoformat(hourly["time"][i]).strftime("%I %p").lstrip("0")
+                stamp = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if stamp.tzinfo is not None:
+                    stamp = stamp.astimezone().replace(tzinfo=None)
+                if stamp >= now.replace(minute=0, second=0, microsecond=0):
+                    first = i
+                    break
             except Exception:
-                t = safe(hourly.get("time", [""])[i])
-            draw.text((x+card_w//2, 170), t, font=font(25, bold=True, mono=True), fill=c["accent"], anchor="mm")
-            hour_value = (hourly.get("time") or [None] * (i + 1))[i]
-            is_night = self._hour_is_night(p, hour_value)
-            draw_weather_icon(draw, hourly.get("weather_code", [None])[i], x+31, 205, 0.72, c, is_night=is_night)
-            draw.text((x+card_w//2, 386), n(hourly.get("temperature_2m", [None])[i], 0, "°"), font=font(52, bold=True), fill=c["text"], anchor="mm")
-            pop = hourly.get("precipitation_probability", [None])[i]
-            draw.text((x+card_w//2, 454), f"RAIN {n(pop, 0, '%')}", font=font(20, bold=True, mono=True), fill=c["muted"], anchor="mm")
-            wind = hourly.get("wind_speed_10m", [None])[i]
-            draw.text((x+card_w//2, 503), f"WIND {n(wind, 0)}", font=font(18, mono=True), fill=c["muted"], anchor="mm")
+                continue
+        return list(range(first, min(len(times), first + max(1, count))))
+
+    def _series_number(self, series: dict[str, Any], key: str, index: int) -> float | None:
+        try:
+            value = (series.get(key) or [])[index]
+            return None if value is None else float(value)
+        except Exception:
+            return None
+
+    def _draw_wind_arrow(self, draw, x: int, y: int, degrees: float | None, c: dict[str, str], radius: int = 24) -> None:
+        try:
+            deg = float(degrees)
+        except Exception:
+            deg = 0.0
+        # Meteorological direction is where wind comes from. Point the arrow toward
+        # the direction the air is moving so the graphic reads naturally on TV.
+        angle = math.radians(deg + 90.0)
+        dx = math.cos(angle) * radius
+        dy = math.sin(angle) * radius
+        x2, y2 = x + dx, y + dy
+        draw.line((x - dx * .55, y - dy * .55, x2, y2), fill=c["accent"], width=4)
+        head = max(7, radius // 3)
+        left = angle + math.radians(145)
+        right = angle - math.radians(145)
+        pts = [(x2, y2), (x2 + math.cos(left)*head, y2 + math.sin(left)*head), (x2 + math.cos(right)*head, y2 + math.sin(right)*head)]
+        draw.polygon(pts, fill=c["accent"])
+        draw.ellipse((x-3, y-3, x+3, y+3), fill=c["text"])
+
+    def _draw_day_ahead(self, draw, w, h, settings, p, c):
+        self._header(draw, w, "Next 24 Hours", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
+        hourly = p.get("hourly") or {}
+        hours = max(12, min(24, int((settings.get("forecast_graphics") or {}).get("day_ahead_hours", 24))))
+        indices = self._future_hour_indices(p, hours)
+        times = hourly.get("time") or []
+        if not indices:
+            draw.text((w//2, h//2), "24-hour forecast unavailable", font=font(34, bold=True), fill=c["text"], anchor="mm")
+            return
+        # Six representative checkpoints across the full window keep the board legible
+        # from across a room while the summary cards preserve the important extremes.
+        sample_count = 6
+        if len(indices) <= sample_count:
+            samples = indices
+        else:
+            samples = []
+            for nidx in range(sample_count):
+                pos = round(nidx * (len(indices)-1) / (sample_count-1))
+                i = indices[pos]
+                if i not in samples: samples.append(i)
+        round_rect(draw, (50, 132, 1230, 455), 18, c["panel2"], outline=c["muted"], width=1)
+        card_w = (1140 // max(1, len(samples)))
+        for col, i in enumerate(samples):
+            x1 = 70 + col * card_w
+            x2 = x1 + card_w - 12
+            if col:
+                draw.line((x1-6, 155, x1-6, 432), fill=c["panel"], width=1)
+            try:
+                stamp = dt.datetime.fromisoformat(str(times[i]))
+                label = stamp.strftime("%I %p").lstrip("0")
+                day = stamp.strftime("%a").upper()
+            except Exception:
+                label, day = "--", ""
+            temp = self._series_number(hourly, "temperature_2m", i)
+            feels = self._series_number(hourly, "apparent_temperature", i)
+            pop = self._series_number(hourly, "precipitation_probability", i) or 0.0
+            code = (hourly.get("weather_code") or [None]*len(times))[i]
+            draw.text(((x1+x2)//2, 164), f"{day} {label}", font=font(14, bold=True, mono=True), fill=c["muted"], anchor="mm")
+            draw_weather_icon(draw, code, (x1+x2)//2-36, 192, .40, c, is_night=self._hour_is_night(p, times[i]), icon_cfg=settings.get("icon_system"))
+            draw.text(((x1+x2)//2, 355), n(temp,0,"°"), font=font(31,bold=True), fill=c["text"], anchor="mm")
+            if feels is not None and temp is not None and abs(feels-temp) >= 4:
+                draw.text(((x1+x2)//2, 387), f"FEELS {feels:.0f}°", font=font(11,bold=True,mono=True), fill=c["muted"], anchor="mm")
+            draw.text(((x1+x2)//2, 420), f"RAIN {pop:.0f}%", font=font(12,bold=True,mono=True), fill=c["accent"] if pop >= 40 else c["muted"], anchor="mm")
+
+        temps=[self._series_number(hourly,"temperature_2m",i) for i in indices]
+        gusts=[self._series_number(hourly,"wind_gusts_10m",i) for i in indices]
+        pops=[self._series_number(hourly,"precipitation_probability",i) for i in indices]
+        rains=[self._series_number(hourly,"precipitation",i) for i in indices]
+        valid_t=[v for v in temps if v is not None]; valid_g=[v for v in gusts if v is not None]; valid_p=[v for v in pops if v is not None]
+        total=sum(v for v in rains if v is not None)
+        peak_pop=max(valid_p) if valid_p else 0
+        cards=[
+            ("24-HR RANGE", f"{min(valid_t):.0f}° – {max(valid_t):.0f}°" if valid_t else "--", "Temperature range"),
+            ("PEAK RAIN", f"{peak_pop:.0f}%", f"{total:.2f}\" forecast total"),
+            ("PEAK GUST", f"{max(valid_g):.0f} mph" if valid_g else "--", "Strongest modeled gust"),
+        ]
+        for j,(label,value,detail) in enumerate(cards):
+            self._metric_tile(draw,(70+j*380,478,420+j*380,592),label,value,c,detail)
+
+    def _draw_humidity_outlook(self, draw, w, h, settings, p, c):
+        self._header(draw, w, "Humidity & Dew Point", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
+        hourly=p.get("hourly") or {}; times=hourly.get("time") or []; indices=self._future_hour_indices(p,12)
+        if not indices:
+            draw.text((w//2,h//2),"Humidity forecast unavailable",font=font(34,bold=True),fill=c["text"],anchor="mm"); return
+        round_rect(draw,(54,132,1226,594),18,c["panel2"],outline=c["muted"],width=1)
+        chart=(90,175,1188,410); step=(chart[2]-chart[0])/max(1,len(indices)-1)
+        humidity=[]; dew=[]; temps=[]
+        for i in indices:
+            rh=self._series_number(hourly,"relative_humidity_2m",i); t=self._series_number(hourly,"temperature_2m",i)
+            humidity.append(rh); temps.append(t); dew.append(dew_point_f(t,rh) if t is not None and rh is not None else None)
+        # RH background bands communicate comfort without adding another legend-heavy chart.
+        for pct, label in ((30,"DRY"),(60,"COMFORT"),(80,"HUMID")):
+            y=int(chart[3]-(pct/100)*(chart[3]-chart[1]))
+            draw.line((chart[0],y,chart[2],y),fill=c["panel"],width=1)
+            draw.text((chart[0]-10,y),f"{pct}%",font=font(11,mono=True),fill=c["muted"],anchor="rm")
+        rh_pts=[]
+        for col,i in enumerate(indices):
+            x=int(chart[0]+col*step); rh=humidity[col]
+            y=int(chart[3]-((rh or 0)/100)*(chart[3]-chart[1])); rh_pts.append((x,y))
+        if len(rh_pts)>1: draw.line(rh_pts,fill="#78d5ff",width=5,joint="curve")
+        for col,i in enumerate(indices):
+            x,y=rh_pts[col]; draw.ellipse((x-5,y-5,x+5,y+5),fill="#78d5ff")
+            try: label=dt.datetime.fromisoformat(str(times[i])).strftime("%I %p").lstrip("0")
+            except Exception: label="--"
+            draw.text((x,430),label,font=font(12,bold=True,mono=True),fill=c["muted"],anchor="mm")
+            if col % 2 == 0:
+                draw.text((x,458),f"{(humidity[col] or 0):.0f}%",font=font(13,bold=True),fill=c["text"],anchor="mm")
+                draw.text((x,482),f"DP {dew[col]:.0f}°" if dew[col] is not None else "DP --",font=font(12,bold=True,mono=True),fill=c["accent"],anchor="mm")
+        valid_dew=[v for v in dew if v is not None]; valid_rh=[v for v in humidity if v is not None]
+        peak_dew=max(valid_dew) if valid_dew else None; low_dew=min(valid_dew) if valid_dew else None; peak_rh=max(valid_rh) if valid_rh else None
+        story="COMFORTABLE"
+        if peak_dew is not None and peak_dew >= 70: story="OPPRESSIVE HUMIDITY"
+        elif peak_dew is not None and peak_dew >= 65: story="VERY HUMID"
+        elif peak_dew is not None and peak_dew <= 35: story="VERY DRY AIR"
+        draw.text((88,534),story,font=font(22,bold=True,mono=True),fill=c["accent"])
+        draw.text((1188,537),f"DEW POINT {n(low_dew,0,'°')} TO {n(peak_dew,0,'°')}  •  RH PEAK {n(peak_rh,0,'%')}",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="ra")
+
+    def _draw_wind_outlook(self, draw, w, h, settings, p, c):
+        self._header(draw, w, "Wind Outlook", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
+        hourly=p.get("hourly") or {}; times=hourly.get("time") or []; indices=self._future_hour_indices(p,12)
+        if not indices:
+            draw.text((w//2,h//2),"Wind forecast unavailable",font=font(34,bold=True),fill=c["text"],anchor="mm"); return
+        round_rect(draw,(54,132,1226,594),18,c["panel2"],outline=c["muted"],width=1)
+        speeds=[self._series_number(hourly,"wind_speed_10m",i) for i in indices]
+        gusts=[self._series_number(hourly,"wind_gusts_10m",i) for i in indices]
+        dirs=[self._series_number(hourly,"wind_direction_10m",i) for i in indices]
+        maxv=max([v for v in speeds+gusts if v is not None] or [10]); maxv=max(10,maxv*1.15)
+        chart=(90,175,1188,390); step=(chart[2]-chart[0])/max(1,len(indices)-1)
+        for level in (0.25,.5,.75,1.0):
+            y=int(chart[3]-level*(chart[3]-chart[1])); draw.line((chart[0],y,chart[2],y),fill=c["panel"],width=1)
+            draw.text((chart[0]-10,y),f"{maxv*level:.0f}",font=font(10,mono=True),fill=c["muted"],anchor="rm")
+        sp=[]; gp=[]
+        for col,i in enumerate(indices):
+            x=int(chart[0]+col*step)
+            sy=int(chart[3]-((speeds[col] or 0)/maxv)*(chart[3]-chart[1])); gy=int(chart[3]-((gusts[col] or 0)/maxv)*(chart[3]-chart[1]))
+            sp.append((x,sy)); gp.append((x,gy))
+        if len(sp)>1: draw.line(sp,fill="#78d5ff",width=4,joint="curve")
+        if len(gp)>1: draw.line(gp,fill=c["accent"],width=4,joint="curve")
+        for col,i in enumerate(indices):
+            x=sp[col][0]
+            if col % 2 == 0:
+                self._draw_wind_arrow(draw,x,440,dirs[col],c,18)
+                try: label=dt.datetime.fromisoformat(str(times[i])).strftime("%I %p").lstrip("0")
+                except Exception: label="--"
+                draw.text((x,476),label,font=font(11,bold=True,mono=True),fill=c["muted"],anchor="mm")
+                from app.weather import wind_direction as _wd
+                draw.text((x,499),_wd(dirs[col]),font=font(12,bold=True,mono=True),fill=c["text"],anchor="mm")
+        max_speed=max([v for v in speeds if v is not None] or [0]); max_gust=max([v for v in gusts if v is not None] or [0])
+        story="LIGHT WINDS" if max_gust < 15 else "BREEZY" if max_gust < 25 else "GUSTY" if max_gust < 40 else "STRONG WINDS"
+        draw.text((88,548),story,font=font(22,bold=True,mono=True),fill=c["accent"])
+        draw.text((1188,548),f"SUSTAINED PEAK {max_speed:.0f} MPH  •  GUST PEAK {max_gust:.0f} MPH",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="ra")
+        draw.text((1188,574),"BLUE: SUSTAINED  •  GOLD: GUSTS",font=font(11,bold=True,mono=True),fill=c["muted"],anchor="ra")
+
+    def _draw_rain_accumulation(self, draw, w, h, settings, p, c):
+        self._header(draw, w, "Rainfall Accumulation", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
+        hourly=p.get("hourly") or {}; times=hourly.get("time") or []; indices=self._future_hour_indices(p,24)
+        if not indices:
+            draw.text((w//2,h//2),"Rainfall forecast unavailable",font=font(34,bold=True),fill=c["text"],anchor="mm"); return
+        vals=[max(0.0,self._series_number(hourly,"precipitation",i) or 0.0) for i in indices]
+        cumulative=[]; total=0.0
+        for v in vals: total+=v; cumulative.append(total)
+        round_rect(draw,(54,132,1226,594),18,c["panel2"],outline=c["muted"],width=1)
+        chart=(88,175,1188,405); max_total=max(.10,total*1.15); step=(chart[2]-chart[0])/max(1,len(indices)-1)
+        for level in (.25,.5,.75,1.0):
+            y=int(chart[3]-level*(chart[3]-chart[1])); draw.line((chart[0],y,chart[2],y),fill=c["panel"],width=1)
+            draw.text((chart[0]-10,y),f"{max_total*level:.2f}\"",font=font(10,mono=True),fill=c["muted"],anchor="rm")
+        pts=[]
+        for col,val in enumerate(cumulative):
+            x=int(chart[0]+col*step); y=int(chart[3]-(val/max_total)*(chart[3]-chart[1])); pts.append((x,y))
+            if vals[col] > 0:
+                bh=max(3,int((vals[col]/max_total)*(chart[3]-chart[1]))); draw.rectangle((x-4,chart[3]-bh,x+4,chart[3]),fill="#6dbcf2")
+        if len(pts)>1: draw.line(pts,fill=c["accent"],width=5,joint="curve")
+        checkpoints=[0,5,11,17,23]
+        for pos in checkpoints:
+            if pos >= len(indices): continue
+            x=pts[pos][0]
+            try: label=dt.datetime.fromisoformat(str(times[indices[pos]])).strftime("%I %p").lstrip("0")
+            except Exception: label="--"
+            draw.text((x,429),label,font=font(11,bold=True,mono=True),fill=c["muted"],anchor="mm")
+        def _sum(nh): return sum(vals[:min(nh,len(vals))])
+        cards=[("NEXT 6 HOURS",f"{_sum(6):.2f}\"","Forecast rainfall"),("NEXT 12 HOURS",f"{_sum(12):.2f}\"","Forecast rainfall"),("NEXT 24 HOURS",f"{_sum(24):.2f}\"","Forecast rainfall")]
+        for j,(label,value,detail) in enumerate(cards): self._metric_tile(draw,(70+j*380,468,420+j*380,575),label,value,c,detail)
+        if total < .01:
+            draw.text((1188,155),"LITTLE OR NO MEASURABLE RAIN",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="ra")
+
+    def _forecast_bullets(self, period: dict[str, Any]) -> list[str]:
+        detail = str(period.get("detailedForecast") or period.get("shortForecast") or "").strip()
+        bullets=[]
+        pop=period.get("precipitationProbability")
+        if pop is not None:
+            try:
+                if float(pop) >= 20: bullets.append(f"Rain chance near {float(pop):.0f}%")
+            except Exception: pass
+        wind=f"{period.get('windDirection','')} {period.get('windSpeed','')}".strip()
+        if wind: bullets.append(f"Wind {wind}")
+        # Use the official NWS sentences, shortened only by deterministic text rules.
+        for sentence in [x.strip() for x in detail.replace(";", ".").split(".") if x.strip()]:
+            sentence=" ".join(sentence.split())
+            if len(sentence) > 92: sentence=sentence[:89].rsplit(" ",1)[0]+"…"
+            low=sentence.lower()
+            if any(low in b.lower() or b.lower() in low for b in bullets): continue
+            bullets.append(sentence)
+            if len(bullets) >= 4: break
+        return bullets[:4]
 
     def _draw_nws_forecast(self, draw, w, h, settings, p, c):
-        self._header(draw, w, "NWS Detailed Forecast", location_label(p["location"]), c)
+        self._header(draw, w, "NWS Forecast Brief", location_label(p["location"]), c)
         nws = p.get("nws") or {}
         periods = nws.get("periods") or []
         if not periods:
@@ -1234,58 +1748,90 @@ class WeatherRenderer:
             for row, line in enumerate(textwrap.wrap(msg, width=82)[:3]):
                 draw.text((w//2, 330 + row*30), line, font=font(18), fill=c["muted"], anchor="mm")
             return
-        cards = periods[:2]
-        for i, period in enumerate(cards):
-            x1 = 55 + i*610
-            x2 = x1 + 555
-            round_rect(draw, (x1, 128, x2, 558), 16, c["panel"], outline=c["muted"], width=2)
-            draw.text((x1+24, 154), str(period.get("name", "Forecast")).upper(), font=font(29, bold=True, mono=True), fill=c["accent"])
-            temp = period.get("temperature")
-            temp_unit = period.get("temperatureUnit") or "F"
-            draw.text((x2-24, 146), f"{safe(temp)}°{temp_unit}", font=font(38, bold=True), fill=c["text"], anchor="ra")
-            short = period.get("shortForecast") or ""
-            draw.text((x1+24, 204), short[:44], font=font(25, bold=True), fill=c["text"])
-            wind = f"Wind {period.get('windDirection','')} {period.get('windSpeed','')}".strip()
-            draw.text((x1+24, 246), wind, font=font(18, bold=True, mono=True), fill=c["muted"])
-            detail = period.get("detailedForecast") or short or "Forecast unavailable."
-            lines = textwrap.wrap(detail, width=43)[:8]
-            for row, line in enumerate(lines):
-                draw.text((x1+24, 294 + row*31), line, font=font(20), fill=c["text"])
-        office = nws.get("office") or "NWS"
-        draw.text((w-42, 590), f"Official forecast: National Weather Service • {office}", font=font(14, mono=True), fill=c["muted"], anchor="ra")
+        main=periods[0]
+        secondary=periods[1] if len(periods)>1 else None
+        round_rect(draw,(54,126,816,586),18,c["panel2"],outline=c["muted"],width=1)
+        draw.text((82,151),str(main.get("name") or "Forecast").upper(),font=font(26,bold=True,mono=True),fill=c["accent"])
+        temp=main.get("temperature"); unit=main.get("temperatureUnit") or "F"
+        draw.text((780,142),f"{safe(temp)}°{unit}",font=font(44,bold=True),fill=c["text"],anchor="ra")
+        short=str(main.get("shortForecast") or "Forecast")
+        for row,line in enumerate(textwrap.wrap(short,width=39)[:2]):
+            draw.text((82,205+row*32),line,font=font(25,bold=True),fill=c["text"])
+        bullets=self._forecast_bullets(main) if (settings.get("forecast_graphics") or {}).get("nws_summary_enabled",True) else []
+        if bullets:
+            y=291
+            for bullet in bullets:
+                draw.ellipse((86,y+8,94,y+16),fill=c["accent"])
+                for sub,line in enumerate(textwrap.wrap(bullet,width=55)[:2]):
+                    draw.text((108,y+sub*25),line,font=font(18),fill=c["text"])
+                y += 55 if len(textwrap.wrap(bullet,width=55))>1 else 40
+        else:
+            detail=str(main.get("detailedForecast") or short)
+            for row,line in enumerate(textwrap.wrap(detail,width=58)[:7]):
+                draw.text((82,292+row*31),line,font=font(18),fill=c["text"])
+
+        if secondary:
+            round_rect(draw,(840,126,1226,586),18,c["panel"],outline=c["muted"],width=1)
+            draw.text((865,153),str(secondary.get("name") or "Next").upper(),font=font(20,bold=True,mono=True),fill=c["accent"])
+            draw.text((1198,147),f"{safe(secondary.get('temperature'))}°{secondary.get('temperatureUnit') or 'F'}",font=font(32,bold=True),fill=c["text"],anchor="ra")
+            sshort=str(secondary.get("shortForecast") or "")
+            for row,line in enumerate(textwrap.wrap(sshort,width=29)[:3]):
+                draw.text((865,207+row*28),line,font=font(20,bold=True),fill=c["text"])
+            y=310
+            for bullet in self._forecast_bullets(secondary)[:3]:
+                draw.text((866,y),"•",font=font(18,bold=True),fill=c["accent"])
+                for sub,line in enumerate(textwrap.wrap(bullet,width=30)[:3]):
+                    draw.text((889,y+sub*23),line,font=font(15),fill=c["text"])
+                y += 68
+        office=nws.get("office") or "NWS"
+        draw.text((1196,610),f"OFFICIAL FORECAST • NATIONAL WEATHER SERVICE {office}",font=font(12,bold=True,mono=True),fill=c["muted"],anchor="ra")
 
     def _draw_precipitation(self, draw, w, h, settings, p, c):
-        self._header(draw, w, "Rain Chances", location_label(p["location"]), c)
+        self._header(draw, w, "Rain Timing", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
         hourly = p.get("hourly", {})
-        indices = self._hour_indices(p)
-        if not indices:
+        base = self._hour_indices(p)
+        times = hourly.get("time") or []
+        if not base or not times:
             draw.text((w//2, h//2), "Precipitation forecast unavailable", font=font(34, bold=True), fill=c["text"], anchor="mm")
             return
-        # Extend to eight points when data is available.
-        first = indices[0]
-        times = hourly.get("time") or []
-        indices = list(range(first, min(first+8, len(times))))
-        chart = (80, 160, w-70, 535)
-        draw.line((chart[0], chart[3], chart[2], chart[3]), fill=c["muted"], width=2)
-        for pct in (25, 50, 75, 100):
-            y = chart[3] - int((chart[3]-chart[1]) * pct/100)
-            draw.line((chart[0], y, chart[2], y), fill=c["panel"], width=1)
-            draw.text((chart[0]-12, y), f"{pct}%", font=font(14, mono=True), fill=c["muted"], anchor="rm")
-        gap = (chart[2]-chart[0]) / max(1, len(indices))
-        bar_w = max(28, int(gap*0.55))
-        for col, i in enumerate(indices):
-            pop = (hourly.get("precipitation_probability") or [None]*len(times))[i]
-            try: value = max(0, min(100, float(pop)))
-            except Exception: value = 0
-            cx = int(chart[0] + gap*(col+0.5))
-            top = chart[3] - int((chart[3]-chart[1]) * value/100)
-            round_rect(draw, (cx-bar_w//2, top, cx+bar_w//2, chart[3]), 7, c["panel"] if value < 40 else c["accent"])
-            draw.text((cx, max(chart[1]+8, top-28)), f"{int(value)}%", font=font(18, bold=True, mono=True), fill=c["text"], anchor="mm")
-            try: label = dt.datetime.fromisoformat(times[i]).strftime("%I %p").lstrip("0")
-            except Exception: label = "--"
-            draw.text((cx, chart[3]+28), label, font=font(17, bold=True, mono=True), fill=c["muted"], anchor="mm")
-        daily_pop = (p.get("daily", {}).get("precipitation_probability_max") or [None])[0]
-        draw.text((w//2, 595), f"TODAY'S MAXIMUM PRECIPITATION CHANCE: {n(daily_pop,0,'%')}", font=font(20, bold=True, mono=True), fill=c["accent"], anchor="mm")
+        first=base[0]; indices=list(range(first,min(first+10,len(times))))
+        round_rect(draw,(54,138,1226,594),18,c["panel2"],outline=c["muted"],width=1)
+        left,right=90,1190; step=(right-left)/max(1,len(indices)-1)
+        draw.line((left,270,right,270),fill=c["muted"],width=3)
+        total=0.0; peak=0.0; peak_i=None
+        for col,i in enumerate(indices):
+            x=int(left+col*step)
+            try: label=dt.datetime.fromisoformat(times[i]).strftime("%I %p").lstrip("0")
+            except Exception: label="--"
+            pop=(hourly.get("precipitation_probability") or [None]*len(times))[i]
+            amt=(hourly.get("precipitation") or [None]*len(times))[i]
+            try: pv=max(0,min(100,float(pop)))
+            except Exception: pv=0.0
+            try: av=max(0.0,float(amt)); total+=av
+            except Exception: av=0.0
+            if pv>peak: peak=pv; peak_i=i
+            state="DRY" if pv<20 else "CHANCE" if pv<50 else "LIKELY" if pv<80 else "HIGH"
+            draw.line((x,258,x,282),fill=c["accent"] if pv>=50 else c["muted"],width=4)
+            draw.text((x,206),label,font=font(15,bold=True,mono=True),fill=c["muted"],anchor="mm")
+            draw.text((x,238),f"{int(pv)}%",font=font(20,bold=True),fill=c["text"],anchor="mm")
+            draw.text((x,304),state,font=font(12,bold=True,mono=True),fill=c["accent"] if pv>=50 else c["muted"],anchor="mm")
+            draw.text((x,330),f"{av:.2f}\"",font=font(12,mono=True),fill=c["text"],anchor="mm")
+        draw.text((90,378),"WHAT TO EXPECT",font=font(14,bold=True,mono=True),fill=c["muted"])
+        peak_label="--"
+        if peak_i is not None:
+            try: peak_label=dt.datetime.fromisoformat(times[peak_i]).strftime("%I:%M %p").lstrip("0")
+            except Exception: pass
+        cards=[
+            ("PEAK CHANCE",f"{peak:.0f}%",f"Near {peak_label}"),
+            ("NEXT 10 HOURS",f"{total:.2f}\"","Model precipitation total"),
+            ("TODAY",n((p.get("daily",{}).get("precipitation_sum") or [None])[0],2,' in'),"Forecast total"),
+        ]
+        cw=350
+        for j,(label,value,detail) in enumerate(cards):
+            x=90+j*380
+            self._metric_tile(draw,(x,402,x+cw,554),label,value,c,detail)
+        draw.text((1190,576),"PROBABILITY + FORECAST AMOUNT",font=font(12,bold=True,mono=True),fill=c["muted"],anchor="ra")
 
     def _draw_condition_focus(self, draw, w, h, settings, p, c):
         cur = p.get("current") or {}; cfg = settings.get("smart_programming") or {}
@@ -1307,10 +1853,13 @@ class WeatherRenderer:
         round_rect(draw,(92,145,w-92,430),22,c["panel"],c["muted"],2)
         draw.text((w//2,250),value,font=font(112,bold=True),fill=c["accent"],anchor="mm")
         draw.text((w//2,355),expl,font=font(24),fill=c["text"],anchor="mm")
-        cards=[("HUMIDITY",n(rh,0,"%")),("DEW POINT",n(dew,0,"°")),("WIND",f"{safe(cur.get('wind_cardinal'))} {n(wind,0,' mph')}")]
+        cards=[("HUMIDITY",n(rh,0,"%"),"humidity"),("DEW POINT",n(dew,0,"°"),"dew_point"),("WIND",f"{safe(cur.get('wind_cardinal'))} {n(wind,0,' mph')}","wind")]
         cw=(w-220)//3
-        for i,(lab,val) in enumerate(cards):
-            x=92+i*(cw+18); round_rect(draw,(x,458,x+cw,570),16,c["panel2"]); draw.text((x+18,480),lab,font=font(16,bold=True,mono=True),fill=c["muted"]); draw.text((x+cw-18,530),val,font=font(28,bold=True),fill=c["text"],anchor="rm")
+        icons_on=(settings.get("icon_system") or {}).get("metric_icons",True)
+        for i,(lab,val,metric) in enumerate(cards):
+            x=92+i*(cw+18); round_rect(draw,(x,458,x+cw,570),16,c["panel2"]); label_x=x+18
+            if icons_on and paste_rwn_icon(getattr(draw,"_image",None),rwn_metric_icon(metric,32),x+16,472): label_x=x+55
+            draw.text((label_x,480),lab,font=font(16,bold=True,mono=True),fill=c["muted"]); draw.text((x+cw-18,530),val,font=font(28,bold=True),fill=c["text"],anchor="rm")
 
     def _draw_weather_history(self, draw, w, h, settings, p, c):
         self._header(draw,w,"24-HOUR WEATHER HISTORY",location_label(p.get("location") or {}),c)
@@ -1474,15 +2023,19 @@ class WeatherRenderer:
         draw=ImageDraw.Draw(img); draw.rectangle((45,108,w-45,172),fill="#071a2ce6")
         draw.text((70,121),title,font=font(30,bold=True),fill="#ffffff"); draw.text((w-70,132),"NOAA NESDIS / STAR",font=font(14,bold=True,mono=True),fill=c["accent"],anchor="ra")
 
+    def _map_engine_config(self, settings):
+        maps=settings.get("maps") or {}
+        return maps.get("engine3") or maps.get("engine2") or {}
+
     def _draw_map_engine_badge(self, draw, w, settings, c):
-        layers=((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {}
+        layers=(self._map_engine_config(settings).get("layers") or {})
         active=" • ".join(key.upper().replace("_"," ") for key,value in layers.items() if value)
         draw.rectangle((55,112,w-55,150),fill="#061827")
-        draw.text((72,121),"MAP ENGINE 2.0",font=font(17,bold=True,mono=True),fill=c["accent"])
+        draw.text((72,121),"MAP ENGINE 3.0",font=font(17,bold=True,mono=True),fill=c["accent"])
         draw.text((w-72,122),active[:92],font=font(12,bold=True,mono=True),fill="#ffffff",anchor="ra")
 
     def _draw_map_engine(self, img, draw, w, h, settings, snapshot, p, c, now, progress):
-        layers=(((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {})
+        layers=(self._map_engine_config(settings).get("layers") or {})
         scoped=copy.deepcopy(settings)
         scoped.setdefault("maps",{})["auto_city_labels"]=bool(layers.get("city_labels",True))
         scoped.setdefault("alerts",{})["show_polygons"]=bool(layers.get("alerts",True))
@@ -1503,6 +2056,89 @@ class WeatherRenderer:
                 for x,y in plotted: draw.ellipse((x-5,y-5,x+5,y+5),fill="#ffda44",outline="#071820",width=2)
         self._draw_map_engine_badge(draw,w,settings,c)
 
+    def _draw_official_map_product(self, img, draw, w, h, settings, p, c, product, title, subtitle):
+        self._header(draw,w,title,location_label(p.get("location") or {}),c)
+        loc=p.get("location") or {}; lid=loc.get("id") or settings.get("primary_location_id")
+        row=self.radar_manager.official_product(product, location_id=lid, copy_image=False) if self.radar_manager and hasattr(self.radar_manager,"official_product") else {}
+        overlay=row.get("image"); view=row.get("view") or "wide"
+        box=(48,126,w-48,h-110); target_w,target_h=box[2]-box[0],box[3]-box[1]
+        base=self.radar_manager.resized_map(view,target_w,target_h,location_id=lid) if self.radar_manager and hasattr(self.radar_manager,"resized_map") else None
+        round_rect(draw,(40,118,w-40,h-102),12,c["panel2"],outline=c["muted"],width=2)
+        if base is not None:
+            img.paste(base,(box[0],box[1]))
+        else:
+            draw.rectangle(box,fill="#102538")
+        if overlay is not None:
+            ov=overlay.resize((target_w,target_h),Image.Resampling.LANCZOS)
+            img.paste(ov,(box[0],box[1]),ov)
+        else:
+            draw.text((w//2,h//2),"OFFICIAL NOAA MAP LAYER TEMPORARILY UNAVAILABLE",font=font(27,bold=True),fill=c["accent"],anchor="mm")
+        draw=ImageDraw.Draw(img)
+        draw.rectangle((box[0]+14,box[1]+14,box[0]+620,box[1]+66),fill="#071723")
+        draw.text((box[0]+28,box[1]+25),subtitle,font=font(17,bold=True,mono=True),fill="#ffffff")
+        if product=="spc_day1":
+            d1=(settings.get("_spc_outlook") or {}).get("day1") or {}
+            risk=str(d1.get("risk") or "NONE"); risk_colors={"NONE":"#6d7b85","TSTM":"#4ca65b","MRGL":"#4e9e64","SLGT":"#d4c83a","ENH":"#e18a31","MDT":"#c94c58","HIGH":"#c05aa5"}
+            color=risk_colors.get(risk,"#6d7b85")
+            draw.rectangle((box[2]-300,box[1]+14,box[2]-14,box[1]+82),fill="#071723",outline=color,width=3)
+            draw.text((box[2]-282,box[1]+25),"LOCAL DAY 1 RISK",font=font(12,bold=True,mono=True),fill="#ffffff")
+            draw.text((box[2]-282,box[1]+47),str(d1.get("name") or "No Categorical Risk").upper(),font=font(18,bold=True),fill=color)
+            labels=[("TSTM","#4ca65b"),("MRGL","#4e9e64"),("SLGT","#d4c83a"),("ENH","#e18a31"),("MDT","#c94c58"),("HIGH","#c05aa5")]
+            lx=box[0]+20; ly=box[3]-44
+            draw.rectangle((box[0]+10,ly-12,box[0]+550,box[3]-8),fill="#071723")
+            for label,col in labels:
+                draw.rectangle((lx,ly,lx+19,ly+14),fill=col); draw.text((lx+25,ly-2),label,font=font(11,bold=True,mono=True),fill="#ffffff"); lx+=82
+        elif product=="wpc_surface":
+            draw.rectangle((box[0]+14,box[3]-48,box[0]+630,box[3]-14),fill="#071723")
+            draw.text((box[0]+28,box[3]-40),"H/L • COLD/WARM/STATIONARY FRONTS • RAIN • SNOW • SIGNIFICANT WEATHER",font=font(12,bold=True,mono=True),fill="#ffffff")
+        elif product=="wpc_qpf_day1":
+            draw.rectangle((box[0]+14,box[3]-48,box[0]+600,box[3]-14),fill="#071723")
+            draw.text((box[0]+28,box[3]-40),"COLOR SHADING = FORECAST LIQUID PRECIPITATION THROUGH DAY 1",font=font(12,bold=True,mono=True),fill="#ffffff")
+        status="CACHED" if row.get("last_error") and overlay is not None else "CURRENT" if overlay is not None else "UNAVAILABLE"
+        draw.text((w-62,h-101),f"{row.get('source') or 'NOAA'} • {status}",font=font(11,bold=True,mono=True),fill=c["muted"],anchor="ra")
+
+    def _draw_spc_hazard_probabilities(self, img, draw, w, h, settings, p, c):
+        self._header(draw,w,"SPC DAY 1 HAZARD PROBABILITIES",location_label(p.get("location") or {}),c)
+        loc=p.get("location") or {}; lid=loc.get("id") or settings.get("primary_location_id")
+        products=[("spc_tornado","TORNADO"),("spc_hail","HAIL"),("spc_wind","DAMAGING WIND")]
+        panel_w=372; panel_h=405; start_x=52; gap=28; y=150
+        for idx,(product,label) in enumerate(products):
+            x=start_x+idx*(panel_w+gap)
+            round_rect(draw,(x,y,x+panel_w,y+panel_h),15,c["panel2"],outline=c["muted"],width=2)
+            row=self.radar_manager.official_product(product,location_id=lid,copy_image=False) if self.radar_manager and hasattr(self.radar_manager,"official_product") else {}
+            view=row.get("view") or "wide"; overlay=row.get("image")
+            map_box=(x+10,y+58,x+panel_w-10,y+panel_h-42); mw,mh=map_box[2]-map_box[0],map_box[3]-map_box[1]
+            base=self.radar_manager.resized_map(view,mw,mh,location_id=lid) if self.radar_manager and hasattr(self.radar_manager,"resized_map") else None
+            if base is not None: img.paste(base,(map_box[0],map_box[1]))
+            else: draw.rectangle(map_box,fill="#102538")
+            if overlay is not None:
+                ov=overlay.resize((mw,mh),Image.Resampling.LANCZOS); img.paste(ov,(map_box[0],map_box[1]),ov)
+            draw=ImageDraw.Draw(img)
+            draw.text((x+panel_w//2,y+30),label,font=font(20,bold=True,mono=True),fill=c["accent"],anchor="mm")
+            status="CURRENT" if overlay is not None and not row.get("last_error") else "CACHED" if overlay is not None else "UNAVAILABLE"
+            draw.text((x+panel_w//2,y+panel_h-21),status,font=font(11,bold=True,mono=True),fill=c["muted"],anchor="mm")
+        draw.text((w//2,585),"SPC PROBABILISTIC GUIDANCE • PERCENT CONTOURS ARE NOT WARNINGS",font=font(13,bold=True,mono=True),fill=c["muted"],anchor="mm")
+
+    def _draw_hazard_map(self, img, draw, w, h, settings, snapshot, p, c, now, progress):
+        scoped=copy.deepcopy(settings)
+        scoped.setdefault("alerts",{})["show_polygons"]=True
+        self._draw_radar(img,draw,w,h,scoped,p,c,now,progress,view="regional",snapshot=snapshot,alert_mode=False)
+        draw=ImageDraw.Draw(img)
+        self._header(draw,w,"SEVERE WEATHER HAZARD MAP",location_label(p.get("location") or {}),c)
+        alerts=(snapshot or {}).get("alerts") or []
+        if alerts:
+            x=62; y=120
+            draw.rectangle((x,y,x+455,y+54+min(3,len(alerts))*36),fill="#071723")
+            draw.text((x+16,y+12),"ACTIVE WARNING POLYGONS",font=font(15,bold=True,mono=True),fill="#ffffff")
+            for i,a in enumerate(alerts[:3]):
+                event=str(a.get("event") or "Weather Alert").upper(); col=self._alert_color(event)
+                draw.rectangle((x+16,y+48+i*36,x+30,y+62+i*36),fill=col)
+                draw.text((x+40,y+44+i*36),event[:42],font=font(13,bold=True,mono=True),fill="#ffffff")
+        d1=(settings.get("_spc_outlook") or {}).get("day1") or {}
+        draw.rectangle((w-360,120,w-62,177),fill="#071723")
+        draw.text((w-344,131),"SPC DAY 1",font=font(12,bold=True,mono=True),fill="#ffffff")
+        draw.text((w-344,151),str(d1.get("name") or "No Categorical Risk").upper(),font=font(16,bold=True),fill=c["accent"])
+
     def _draw_studio_bumper(self, draw, w, h, settings, bumper_id, c):
         item=bumper(settings,bumper_id) or {"title":"ROLLER WEATHER NETWORK","subtitle":"WEATHER UPDATE","accent":c["accent"]}
         accent=str(item.get("accent") or c["accent"]); draw.rectangle((0,0,w,18),fill=accent); draw.rectangle((0,h-104,w,h-86),fill=accent)
@@ -1512,28 +2148,53 @@ class WeatherRenderer:
         draw.text((w//2,475),str(settings.get("service_area") or "LOCAL • REGIONAL • ALWAYS READY").upper(),font=font(19,mono=True),fill=c["muted"],anchor="mm")
 
     def _draw_seven_day(self, draw, w, h, settings, p, c):
-        self._header(draw, w, "7-Day Forecast", location_label(p["location"]), c)
-        daily = p.get("daily", {})
-        dates = daily.get("time") or []
-        card_w = 158
-        gap = 13
-        count = min(7, len(dates))
-        start_x = (w - (count*card_w + max(0,count-1)*gap)) // 2
+        self._header(draw, w, "7-Day Outlook", location_label(p["location"]), c)
+        self._source_badge(draw, p, c, settings)
+        daily=p.get("daily",{}); dates=daily.get("time") or []; count=min(7,len(dates))
+        if not count:
+            draw.text((w//2,h//2),"Extended forecast unavailable",font=font(34,bold=True),fill=c["text"],anchor="mm"); return
+        highs=(daily.get("temperature_2m_max") or [None]*count)[:count]
+        lows=(daily.get("temperature_2m_min") or [None]*count)[:count]
+        pops=(daily.get("precipitation_probability_max") or [None]*count)[:count]
+        codes=(daily.get("weather_code") or [None]*count)[:count]
+        round_rect(draw,(48,132,1232,604),18,c["panel2"],outline=c["muted"],width=1)
+        left,right=105,1150; step=(right-left)/max(1,count-1)
+        xs=[int(left+i*step) for i in range(count)]
+        vals=[]
+        for x in highs+lows:
+            try: vals.append(float(x))
+            except Exception: pass
+        lo=min(vals) if vals else 0; hi=max(vals) if vals else 1
+        if hi-lo<8: lo-=4; hi+=4
+        high_pts=[]; low_pts=[]
         for i in range(count):
-            x = start_x + i*(card_w+gap)
-            round_rect(draw, (x, 132, x+card_w, 555), 14, c["panel"])
-            try:
-                day = dt.date.fromisoformat(dates[i]).strftime("%a").upper()
-            except Exception:
-                day = "DAY"
-            draw.text((x+card_w//2, 166), day, font=font(27, bold=True, mono=True), fill=c["accent"], anchor="mm")
-            draw_weather_icon(draw, (daily.get("weather_code") or [None]*count)[i], x+24, 205, 0.64, c)
-            high = (daily.get("temperature_2m_max") or [None]*count)[i]
-            low = (daily.get("temperature_2m_min") or [None]*count)[i]
-            pop = (daily.get("precipitation_probability_max") or [None]*count)[i]
-            draw.text((x+card_w//2, 382), n(high, 0, "°"), font=font(45, bold=True), fill=c["text"], anchor="mm")
-            draw.text((x+card_w//2, 438), n(low, 0, "°"), font=font(33), fill=c["muted"], anchor="mm")
-            draw.text((x+card_w//2, 507), f"RAIN {n(pop, 0, '%')}", font=font(17, bold=True, mono=True), fill=c["muted"], anchor="mm")
+            try: hv=float(highs[i]); hy=int(288-(hv-lo)/max(1,hi-lo)*112)
+            except Exception: hy=230
+            try: lv=float(lows[i]); ly=int(288-(lv-lo)/max(1,hi-lo)*112)
+            except Exception: ly=270
+            high_pts.append((xs[i],hy)); low_pts.append((xs[i],ly))
+        if count>1:
+            draw.line(high_pts,fill=c["accent"],width=5,joint="curve")
+            draw.line(low_pts,fill=c["muted"],width=3,joint="curve")
+        for i,x in enumerate(xs):
+            try: day=dt.date.fromisoformat(dates[i]).strftime("%a").upper()
+            except Exception: day="DAY"
+            draw.text((x,154),day,font=font(18,bold=True,mono=True),fill=c["accent"],anchor="mm")
+            draw.ellipse((x-6,high_pts[i][1]-6,x+6,high_pts[i][1]+6),fill=c["accent"])
+            draw.text((x,high_pts[i][1]-18),n(highs[i],0,"°"),font=font(18,bold=True),fill=c["text"],anchor="mm")
+            draw.ellipse((x-5,low_pts[i][1]-5,x+5,low_pts[i][1]+5),fill=c["muted"])
+            draw.text((x,low_pts[i][1]+18),n(lows[i],0,"°"),font=font(15,bold=True),fill=c["muted"],anchor="mm")
+            draw_weather_icon(draw,codes[i],x-34,322,0.38,c,icon_cfg=settings.get("icon_system"))
+            try: pv=max(0,min(100,float(pops[i])))
+            except Exception: pv=0
+            bh=int(72*pv/100)
+            draw.rounded_rectangle((x-24,518-bh,x+24,518),radius=7,fill=c["accent"] if pv>=50 else c["panel"])
+            draw.text((x,541),f"{int(pv)}%",font=font(13,bold=True,mono=True),fill=c["text"],anchor="mm")
+            if pv>=60:
+                draw.text((x,574),"WET",font=font(11,bold=True,mono=True),fill=c["accent"],anchor="mm")
+        draw.text((75,194),"HIGH",font=font(12,bold=True,mono=True),fill=c["accent"])
+        draw.text((75,272),"LOW",font=font(12,bold=True,mono=True),fill=c["muted"])
+        draw.text((75,520),"RAIN",font=font(12,bold=True,mono=True),fill=c["muted"])
 
     def _draw_regional(self, draw, w, h, settings, snapshot, primary, c):
         self._header(draw, w, "Regional Conditions", "LOCAL AREA", c)
@@ -1592,7 +2253,7 @@ class WeatherRenderer:
             if (settings.get("maps") or {}).get("auto_city_labels", True):
                 self._draw_auto_city_labels(draw, map_box, p, int(view_cfg.get("zoom", {"local":7,"regional":6,"wide":5}.get(view,7))), settings, c, compact=True)
             if (settings.get("alerts", {}) or {}).get("show_polygons", True) and (snapshot or {}).get("alerts"):
-                self._draw_alert_polygons(draw, map_box, p, int(view_cfg.get("zoom", {"local":7,"regional":6,"wide":5}.get(view,7))), (snapshot or {}).get("alerts") or [])
+                self._draw_alert_polygons(img, draw, map_box, p, int(view_cfg.get("zoom", {"local":7,"regional":6,"wide":5}.get(view,7))), (snapshot or {}).get("alerts") or [])
             if alert_mode:
                 alert = ((snapshot or {}).get("alerts") or [{}])[0]
                 self._draw_radar_alert_banner(draw, map_box, alert, c)
@@ -1619,10 +2280,15 @@ class WeatherRenderer:
                 draw.rectangle((key_x+i*39, key_y, key_x+i*39+36, key_y+14), fill=color)
             draw.text((key_x, key_y+19), "LIGHT                         HEAVY", font=font(12, bold=True, mono=True), fill="#ffffff")
 
-            # Lower information strip helps distinguish the three radar products at a glance.
-            zoom = int(view_cfg.get("zoom", {"local": 7, "regional": 6, "wide": 5}.get(view, 7)))
-            info = f"ZOOM {zoom}   •   {len(frames)} FRAME LOOP   •   OPACITY {int(float(radar_cfg.get('opacity', 0.82))*100)}%   •   CONTRAST {float(radar_cfg.get('contrast', 1.25)):.2f}x"
-            draw.rectangle((map_box[0]+16, map_box[3]-48, map_box[0]+690, map_box[3]-14), fill=(8,20,34))
+            # Viewer-facing timing replaces v0.3.0's operator/debug values.
+            try:
+                oldest = min(float(row.get("time", frame["time"])) for row in frames)
+                newest = max(float(row.get("time", frame["time"])) for row in frames)
+                span = max(0, int(round((newest-oldest)/60.0)))
+            except Exception:
+                span = 0
+            info = f"PAST {span or len(frames)*5} MINUTES   •   {len(frames)} FRAME LOOP   •   LATEST {ts}"
+            draw.rectangle((map_box[0]+16, map_box[3]-48, map_box[0]+650, map_box[3]-14), fill=(8,20,34))
             draw.text((map_box[0]+28, map_box[3]-40), info, font=font(14, bold=True, mono=True), fill="#ffffff")
         else:
             round_rect(draw, map_box, 12, c["panel"])
@@ -1667,7 +2333,7 @@ class WeatherRenderer:
         if "watch" in e: return "#f5e642"
         return "#58d8ff"
 
-    def _draw_alert_polygons(self, draw, map_box, p, zoom, alerts):
+    def _draw_alert_polygons(self, img, draw, map_box, p, zoom, alerts):
         loc = p.get("location", {})
         try:
             center_x, center_y = latlon_to_world(float(loc["latitude"]), float(loc["longitude"]), int(zoom))
@@ -1701,9 +2367,24 @@ class WeatherRenderer:
                     try: points.append(project(coord))
                     except Exception: pass
                 if len(points) >= 3:
-                    draw.line(points + [points[0]], fill=color, width=5, joint="curve")
-                    # second dark edge improves visibility on bright radar returns.
+                    try:
+                        rgb=ImageColor.getrgb(color)
+                        overlay=Image.new("RGBA",img.size,(0,0,0,0)); od=ImageDraw.Draw(overlay)
+                        od.polygon(points,fill=(*rgb,42))
+                        od.line(points + [points[0]],fill=(*rgb,235),width=6,joint="curve")
+                        img.paste(overlay,(0,0),overlay); draw=ImageDraw.Draw(img)
+                    except Exception:
+                        draw.line(points + [points[0]], fill=color, width=5, joint="curve")
                     draw.line(points + [points[0]], fill="#ffffff", width=1, joint="curve")
+                    try:
+                        cx=sum(x for x,_ in points)/len(points); cy=sum(y for _,y in points)/len(points)
+                        label=str(alert.get("event") or "WARNING").upper().replace(" WARNING","")[:24]
+                        if x1+60<cx<x2-60 and y1+35<cy<y2-35:
+                            tw=draw.textbbox((0,0),label,font=font(11,bold=True,mono=True))[2]
+                            draw.rectangle((cx-tw/2-7,cy-11,cx+tw/2+7,cy+10),fill="#071723",outline=color,width=2)
+                            draw.text((cx,cy),label,font=font(11,bold=True,mono=True),fill="#ffffff",anchor="mm")
+                    except Exception:
+                        pass
 
     def _draw_radar_alert_banner(self, draw, map_box, alert, c):
         event = alert.get("event", "WEATHER ALERT").upper()
@@ -1772,35 +2453,38 @@ class WeatherRenderer:
             draw.text((x+496, y+40), value, font=font(size, bold=True), fill=c["text"], anchor="ra")
 
     def _draw_alert(self, draw, w, h, settings, snapshot, primary, c):
-        alert = (snapshot.get("alerts") or [{}])[0]
-        event = alert.get("event", "Weather Alert")
-        color = self._alert_color(event)
-        draw.rectangle((0, 0, w, 104), fill=color)
-        draw.text((w//2, 52), "SEVERE WEATHER ALERT" if self._takeover_alert(settings, snapshot) else "WEATHER ALERT", font=font(43, bold=True), fill="#ffffff", anchor="mm")
-        draw.text((w//2, 158), event.upper(), font=font(38, bold=True), fill=c["accent"], anchor="mm")
-        headline = alert.get("headline") or event or "Weather alert in effect"
-        lines = textwrap.wrap(headline, width=62)[:2]
-        y = 214
-        for line in lines:
-            draw.text((w//2, y), line, font=font(27, bold=True), fill=c["text"], anchor="mm")
-            y += 40
-        area = alert.get("areaDesc", "")
-        for line in textwrap.wrap(area, width=78)[:2]:
-            draw.text((w//2, y+12), line, font=font(21), fill=c["muted"], anchor="mm")
-            y += 30
-        instruction = (alert.get("instruction") or alert.get("description") or "").replace("\n", " ")
-        if instruction:
-            y += 18
-            for line in textwrap.wrap(instruction, width=92)[:3]:
-                draw.text((w//2, y), line, font=font(18), fill=c["text"], anchor="mm")
-                y += 27
-        expiry = alert.get("expires") or alert.get("ends") or ""
-        try:
-            expiry = dt.datetime.fromisoformat(expiry.replace("Z", "+00:00")).astimezone().strftime("%I:%M %p").lstrip("0")
-        except Exception:
-            expiry = "--"
-        draw.text((w//2, 548), f"SEVERITY {alert.get('severity','Unknown').upper()}   •   URGENCY {alert.get('urgency','Unknown').upper()}   •   EXPIRES {expiry}", font=font(19, bold=True, mono=True), fill=c["accent"], anchor="mm")
-        draw.text((w//2, 584), "Source: National Weather Service", font=font(14, mono=True), fill=c["muted"], anchor="mm")
+        alert=(snapshot.get("alerts") or [{}])[0]
+        event=str(alert.get("event") or "Weather Alert")
+        color=self._alert_color(event)
+        # Strong alert identity with a persistent left severity rail rather than a page of text.
+        draw.rectangle((0,0,w,94),fill=color)
+        draw.text((38,22),"RWN WEATHER ALERT",font=font(34,bold=True,mono=True),fill="#ffffff")
+        draw.text((w-38,30),str(alert.get("severity") or "Unknown").upper(),font=font(18,bold=True,mono=True),fill="#ffffff",anchor="ra")
+        draw.rectangle((42,120,58,600),fill=color)
+        alert_icon_on=(settings.get("icon_system") or {}).get("alert_icons",True)
+        title_x=88
+        if alert_icon_on and paste_rwn_icon(getattr(draw,"_image",None),rwn_alert_icon(event,104),82,118):
+            title_x=205
+        draw.text((title_x,126),event.upper(),font=font(36,bold=True),fill=c["accent"])
+        headline=str(alert.get("headline") or event or "Weather alert in effect")
+        y=184
+        for line in textwrap.wrap(headline,width=66)[:2]:
+            draw.text((88,y),line,font=font(26,bold=True),fill=c["text"]); y+=38
+        area=str(alert.get("areaDesc") or "")
+        round_rect(draw,(88,278,1190,354),13,c["panel"],outline=color,width=2)
+        draw.text((108,292),"AFFECTED AREA",font=font(14,bold=True,mono=True),fill=c["muted"])
+        draw.text((108,321),area[:92] or "See National Weather Service alert",font=font(20,bold=True),fill=c["text"])
+        instruction=(alert.get("instruction") or alert.get("description") or "").replace("\n"," ")
+        draw.text((88,386),"WHAT YOU NEED TO KNOW",font=font(15,bold=True,mono=True),fill=c["muted"])
+        iy=418
+        for line in textwrap.wrap(instruction,width=86)[:4]:
+            draw.text((88,iy),line,font=font(20),fill=c["text"]); iy+=29
+        expiry=alert.get("expires") or alert.get("ends") or ""
+        try: expiry=dt.datetime.fromisoformat(str(expiry).replace("Z","+00:00")).astimezone().strftime("%I:%M %p").lstrip("0")
+        except Exception: expiry="--"
+        round_rect(draw,(88,548,1190,596),10,c["panel2"],outline=c["muted"],width=1)
+        footer=f"{str(alert.get('urgency') or 'Unknown').upper()}  •  EXPIRES {expiry}  •  NATIONAL WEATHER SERVICE"
+        draw.text((639,572),footer,font=font(15,bold=True,mono=True),fill=c["accent"],anchor="mm")
 
     def _is_takeover_active(self, settings, snapshot):
         return self._takeover_alert(settings, snapshot) is not None
@@ -1833,47 +2517,57 @@ class WeatherRenderer:
         return "     •     ".join(parts)+"     •     "
 
     def _draw_footer(self, draw, w, h, settings, snapshot, c, now):
-        ticker_top = h - 86
-        bug_w = 272
-        gutter = 14
-        # Base lower third.
-        draw.rectangle((0, ticker_top, w, h), fill=c["ticker"])
-        draw.rectangle((0, ticker_top, w, ticker_top+3), fill=c["accent"])
+        ticker_top=h-86; bug_w=268; gutter=0
+        draw.rectangle((0,ticker_top,w,h),fill=c["ticker"])
+        draw.rectangle((0,ticker_top,w,ticker_top+3),fill=c["accent"])
+        clock=dt.datetime.fromtimestamp(now).strftime("%I:%M %p").lstrip("0")
+        station=settings.get("station_name","Roller Weather Network"); callsign=(settings.get("station_callsign") or "").strip().upper()
+        draw.rectangle((0,ticker_top,bug_w,h),fill=c["panel2"])
+        draw.line((bug_w,ticker_top,bug_w,h),fill=c["muted"],width=2)
+        draw.text((bug_w//2,ticker_top+24),clock,font=font(26,bold=True,mono=True),fill=c["accent"],anchor="mm")
+        draw.text((bug_w//2,ticker_top+57),callsign or station[:24],font=font(15,bold=True,mono=True),fill=c["text"],anchor="mm")
+        if callsign: draw.text((bug_w//2,ticker_top+75),station[:27],font=font(10,mono=True),fill=c["muted"],anchor="mm")
 
-        # Draw the scrolling ticker into its own clipped layer. This is the v0.1.4
-        # station-bug fix: ticker pixels physically cannot exist under the left bug.
-        ticker_layer = Image.new("RGBA", (max(1, w - bug_w - gutter), 86), (0, 0, 0, 0))
-        td = ImageDraw.Draw(ticker_layer)
-        text = self._ticker_text(settings, snapshot)
-        f = font(24, bold=True, mono=True)
-        bbox = td.textbbox((0, 0), text, font=f)
-        text_w = max(1, bbox[2] - bbox[0])
-        area_w = ticker_layer.size[0]
-        speed = 115
-        offset = int(now * speed) % (text_w + 100)
-        x = area_w - offset
-        while x < area_w:
-            td.text((x, 30), text, font=f, fill=c["text"])
-            x += text_w + 100
-        # Composite strictly to the right of the station bug.
-        draw._image.paste(ticker_layer, (bug_w + gutter, ticker_top), ticker_layer)
+        severe=self._takeover_alert(settings,snapshot)
+        mode=self._visual(settings).get("footer_mode","data_ribbon")
+        if severe:
+            color=self._alert_color(str(severe.get("event") or ""))
+            draw.rectangle((bug_w,ticker_top,w,h),fill="#111820")
+            draw.rectangle((bug_w,ticker_top,bug_w+10,h),fill=color)
+            draw.text((bug_w+30,ticker_top+20),str(severe.get("event") or "WEATHER ALERT").upper(),font=font(18,bold=True,mono=True),fill=color)
+            draw.text((bug_w+30,ticker_top+51),str(severe.get("areaDesc") or "")[:74],font=font(18,bold=True),fill="#ffffff")
+        elif mode == "crawl":
+            ticker_layer=Image.new("RGBA",(max(1,w-bug_w-14),86),(0,0,0,0)); td=ImageDraw.Draw(ticker_layer)
+            text=self._ticker_text(settings,snapshot); f=font(24,bold=True,mono=True); bbox=td.textbbox((0,0),text,font=f); text_w=max(1,bbox[2]-bbox[0]); area_w=ticker_layer.size[0]
+            offset=int(now*115)%(text_w+100); x=area_w-offset
+            while x<area_w:
+                td.text((x,30),text,font=f,fill=c["text"]); x+=text_w+100
+            draw._image.paste(ticker_layer,(bug_w+14,ticker_top),ticker_layer)
+        else:
+            primary=self._primary(settings,snapshot); items=[]
+            if primary:
+                cur=primary.get("current",{}); daily=primary.get("daily",{}); hourly=primary.get("hourly",{}); loc=primary.get("location",{})
+                highs=daily.get("temperature_2m_max") or []; lows=daily.get("temperature_2m_min") or []
+                items=[
+                    (str(loc.get("name") or "LOCAL").upper(),f"{n(cur.get('temperature_2m'),0,'°')} {str(cur.get('description') or '')[:18]}"),
+                    ("TODAY",f"{n(highs[0] if highs else None,0,'°')} / {n(lows[0] if lows else None,0,'°')}"),
+                    ("RAIN NEXT 12H",f"{self._max_next(hourly,'precipitation_probability',12):.0f}%"),
+                    ("WIND",f"{cur.get('wind_cardinal','--')} {n(cur.get('wind_speed_10m'),0,' mph')}")
+                ]
+            else: items=[("SETUP","ADD A ZIP CODE")]
+            area_w=w-bug_w; cell=area_w/max(1,len(items))
+            for i,(label,value) in enumerate(items):
+                x1=int(bug_w+i*cell); x2=int(bug_w+(i+1)*cell)
+                if i: draw.line((x1,ticker_top+12,x1,h-12),fill=c["panel2"],width=2)
+                draw.text((x1+14,ticker_top+17),label,font=font(11,bold=True,mono=True),fill=c["muted"])
+                size=19 if len(value)<22 else 15
+                draw.text((x1+14,ticker_top+44),value,font=font(size,bold=True),fill=c["text"])
 
-        # Station/time bug is opaque and rendered last.
-        clock = dt.datetime.fromtimestamp(now).strftime("%I:%M %p").lstrip("0")
-        station = settings.get("station_name", "Roller Weather Network")
-        callsign = (settings.get("station_callsign") or "").strip().upper()
-        draw.rectangle((0, ticker_top, bug_w, h), fill=c["panel2"])
-        draw.line((bug_w, ticker_top, bug_w, h), fill=c["muted"], width=2)
-        draw.text((bug_w//2, ticker_top+23), clock, font=font(27, bold=True, mono=True), fill=c["accent"], anchor="mm")
-        bug_station = callsign if callsign else station[:26]
-        draw.text((bug_w//2, ticker_top+54), bug_station, font=font(15, bold=True, mono=True), fill=c["text"], anchor="mm")
-        if callsign:
-            draw.text((bug_w//2, ticker_top+73), station[:28], font=font(11, mono=True), fill=c["muted"], anchor="mm")
-        if bool(settings.get("_local8_active")) and not self._is_takeover_active(settings, snapshot):
-            draw.rectangle((bug_w-88, ticker_top+4, bug_w-5, ticker_top+20), fill=c["accent"])
-            draw.text((bug_w-46, ticker_top+12), "LOCAL 8s", font=font(9, bold=True, mono=True), fill=c["panel2"], anchor="mm")
-        lid = settings.get("_render_location_id") or settings.get("primary_location_id")
-        weather_state = ((((snapshot.get("location_status") or {}).get(lid) or {}).get("weather") or {}).get("state"))
-        if weather_state == "cached":
-            draw.rectangle((5, ticker_top+4, 78, ticker_top+20), fill="#b36b18")
-            draw.text((41, ticker_top+12), "CACHED", font=font(9, bold=True, mono=True), fill="#ffffff", anchor="mm")
+        if bool(settings.get("_local8_active")) and not self._is_takeover_active(settings,snapshot):
+            draw.rectangle((bug_w-82,ticker_top+4,bug_w-5,ticker_top+20),fill=c["accent"])
+            draw.text((bug_w-43,ticker_top+12),"LOCAL 8s",font=font(9,bold=True,mono=True),fill=c["panel2"],anchor="mm")
+        lid=settings.get("_render_location_id") or settings.get("primary_location_id")
+        weather_state=((((snapshot.get("location_status") or {}).get(lid) or {}).get("weather") or {}).get("state"))
+        if weather_state=="cached":
+            draw.rectangle((5,ticker_top+4,78,ticker_top+20),fill="#b36b18")
+            draw.text((41,ticker_top+12),"CACHED",font=font(9,bold=True,mono=True),fill="#ffffff",anchor="mm")

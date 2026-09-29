@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeatherStream v0.3.0 / Roller Weather Network Admin</title>
+  <title>WeatherStream v0.3.4 / Roller Weather Network Admin</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main class="shell">
   <header class="topbar">
     <div>
-      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.0</div>
+      <div class="eyebrow">ROLLER WEATHER NETWORK • WEATHERSTREAM v0.3.4</div>
       <h1>Channel Configuration</h1>
     </div>
     <div class="row-actions"><a class="button ghost" href="/admin">Dashboard</a><a class="button ghost" href="/admin/studio">Studio</a><a class="button ghost" href="/admin/channels">Channels</a><a class="button ghost" href="/">Channel Home</a></div>
@@ -27,7 +27,7 @@
 
   <section class="grid two">
     <article class="card">
-      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.0</span></div>
+      <div class="card-head"><div><h2>Multi-Region Network</h2><p>Group ZIP locations into independently branded service regions. A location belongs to one region.</p></div><span class="pill">v0.3.4</span></div>
       <label class="checkbox"><input id="regionsEnabled" type="checkbox"> Enable explicit multi-region assignments</label>
       <div class="form-grid"><label>Region name<input id="regionName" placeholder="Gulf Coast"></label><label>Callsign<input id="regionCallsign" maxlength="12" placeholder="RWN-GC"></label><label>Theme<select id="regionTheme"><option value="local-90s">Local Cable 90s</option><option value="classic-blue">Classic Blue</option><option value="retro-2000">Retro 2000</option><option value="terminal-80s">Weather Terminal 80s</option><option value="cable-gold">Cable Gold</option></select></label><label>Branding profile<input id="regionBranding" value="default" maxlength="32"></label><label>Locations<select id="regionLocations" multiple size="4"></select></label></div>
       <button class="button ghost" type="button" onclick="addRegion()">Add Region</button><div id="regionList" class="locations top-gap"></div><button class="button top-gap" onclick="saveGeneral()">Save Network Regions</button>
@@ -41,7 +41,7 @@
 
   <section class="grid two">
     <article class="card"><div class="card-head"><div><h2>Automatic Event Channels</h2><p>Standing IPTV channels wake from matching official NWS alerts and remain available through a cooldown.</p></div><span class="pill">AUTOMATIC</span></div><div class="form-grid"><label class="checkbox"><input id="eventsEnabled" type="checkbox"> Publish event channels</label><label class="checkbox"><input id="eventsAutoStart" type="checkbox"> Auto-start matched channels</label><label>Cooldown (hours)<input id="eventsCooldown" type="number" min="0" max="24"></label><label class="checkbox"><input class="event-type" value="tornado" type="checkbox"> Tornado</label><label class="checkbox"><input class="event-type" value="flood" type="checkbox"> Flood</label><label class="checkbox"><input class="event-type" value="winter" type="checkbox"> Winter</label><label class="checkbox"><input class="event-type" value="wildfire" type="checkbox"> Wildfire</label><label class="checkbox"><input class="event-type" value="heat" type="checkbox"> Extreme heat</label></div><button class="button" onclick="saveGeneral()">Save Event Channels</button></article>
-    <article class="card"><div class="card-head"><div><h2>Map Engine 2.0</h2><p>Observed radar, official GOES-19 satellite/lightning imagery, warnings, cities, boundaries, and tropical context.</p></div><span class="pill">NOAA LAYERS</span></div><div class="form-grid"><label class="checkbox"><input id="map2Enabled" type="checkbox"> Enable Map Engine 2.0</label><label>Imagery refresh (seconds)<input id="map2Refresh" type="number" min="120" max="3600"></label><label class="checkbox"><input class="map2-layer" value="radar" type="checkbox"> Radar</label><label class="checkbox"><input class="map2-layer" value="satellite" type="checkbox"> Satellite</label><label class="checkbox"><input class="map2-layer" value="lightning" type="checkbox"> Lightning</label><label class="checkbox"><input class="map2-layer" value="alerts" type="checkbox"> Warning polygons</label><label class="checkbox"><input class="map2-layer" value="tropical_tracks" type="checkbox"> Tropical tracks</label><label class="checkbox"><input class="map2-layer" value="city_labels" type="checkbox"> City labels</label><label class="checkbox"><input class="map2-layer" value="boundaries" type="checkbox"> Boundaries</label></div><button class="button" onclick="saveGeneral()">Save Map Engine</button></article>
+    <article class="card"><div class="card-head"><div><h2>Map Engine 3.0</h2><p>Broadcast maps combining radar, warnings, official SPC risk, WPC fronts/significant weather, WPC QPF, GOES imagery, boundaries, cities, and tropical context.</p></div><span class="pill">NOAA MAPS</span></div><div class="form-grid"><label class="checkbox"><input id="map2Enabled" type="checkbox"> Enable Map Engine 3.0</label><label>Map refresh (seconds)<input id="map2Refresh" type="number" min="120" max="3600"></label><label class="checkbox"><input class="map2-layer" value="radar" type="checkbox"> Radar</label><label class="checkbox"><input class="map2-layer" value="alerts" type="checkbox"> Filled warning polygons</label><label class="checkbox"><input class="map2-layer" value="spc_outlook" type="checkbox"> SPC Day 1 geographic outlook</label><label class="checkbox"><input class="map2-layer" value="spc_probabilities" type="checkbox"> SPC tornado / hail / wind layers</label><label class="checkbox"><input class="map2-layer" value="surface_chart" type="checkbox"> WPC fronts / highs / lows</label><label class="checkbox"><input class="map2-layer" value="qpf" type="checkbox"> WPC 24-hour QPF</label><label class="checkbox"><input class="map2-layer" value="satellite" type="checkbox"> GOES satellite</label><label class="checkbox"><input class="map2-layer" value="lightning" type="checkbox"> GOES lightning</label><label class="checkbox"><input class="map2-layer" value="tropical_tracks" type="checkbox"> Tropical tracks</label><label class="checkbox"><input class="map2-layer" value="city_labels" type="checkbox"> City labels</label><label class="checkbox"><input class="map2-layer" value="boundaries" type="checkbox"> Boundaries</label></div><button class="button" onclick="saveGeneral()">Save Map Engine</button></article>
   </section>
 
   <section class="grid two">
@@ -119,7 +119,7 @@
         <h2>Presentation</h2>
         <p>Broadcast transitions, rotating station IDs, NWS narrative forecasts, precipitation graphics, and a configurable slide lineup.</p>
       </div>
-      <span class="pill">v0.3.0</span>
+      <span class="pill">v0.3.4</span>
     </div>
     <div class="form-grid">
       <label>Transition
@@ -139,16 +139,30 @@
       <label>Transition seconds<input id="transitionSeconds" type="number" min="0" max="2" step="0.05"></label>
       <label class="checkbox"><input id="showStationId" type="checkbox"> Show station ID bumper</label>
       <label class="checkbox"><input id="backgroundMotion" type="checkbox"> Animated theme background</label>
-      <label class="wide">Slide order <span class="hint">v0.2.2.1 slides include condition_focus, weather_history and spc_outlook, plus all existing radar/map slides.</span>
+      <label class="checkbox"><input id="visualSystemEnabled" type="checkbox"> Visual System 2.0 scalable canvas</label>
+      <label>Lower third mode<select id="footerMode"><option value="data_ribbon">Data ribbon</option><option value="crawl">Classic scrolling crawl</option></select></label>
+      <label class="checkbox"><input id="sourceBadges" type="checkbox"> Show data source badges</label>
+      <label class="checkbox"><input id="freshnessBadges" type="checkbox"> Show update freshness</label>
+      <label class="checkbox"><input id="conditionBackgrounds" type="checkbox"> Condition-responsive backgrounds</label>
+      <label class="checkbox"><input id="iconSystemEnabled" type="checkbox"> RWN custom weather icon system</label>
+      <label class="checkbox"><input id="iconAnimations" type="checkbox"> Subtle animated weather icons</label>
+      <label>Icon motion speed<input id="iconAnimationSpeed" type="number" min="0.25" max="4" step="0.05"></label>
+      <label class="checkbox"><input id="metricIcons" type="checkbox"> Metric icons on data cards</label>
+      <label class="checkbox"><input id="alertIcons" type="checkbox"> Custom severe-weather icons</label>
+      <label class="wide">Slide order <span class="hint">Map Engine 3.0 adds spc_map, spc_hazards, surface_map, qpf_map, and hazard_map in addition to the existing radar/map slides.</span>
         <input id="slideSequence">
       </label>
       <label>Station ID<input id="durStation" type="number" min="3" max="20"></label>
       <label>Current<input id="durCurrent" type="number" min="3" max="60"></label>
       <label>Today<input id="durToday" type="number" min="3" max="60"></label>
       <label>NWS Forecast<input id="durNwsForecast" type="number" min="3" max="60"></label>
+      <label>Next 24 Hours<input id="durDayAhead" type="number" min="3" max="60"></label>
       <label>Temperature Trend<input id="durTemperatureTrend" type="number" min="3" max="60"></label>
       <label>Hourly<input id="durHourly" type="number" min="3" max="60"></label>
-      <label>Rain Chances<input id="durPrecipitation" type="number" min="3" max="60"></label>
+      <label>Humidity / Dew Point<input id="durHumidityOutlook" type="number" min="3" max="60"></label>
+      <label>Wind Outlook<input id="durWindOutlook" type="number" min="3" max="60"></label>
+      <label>Rain Timing<input id="durPrecipitation" type="number" min="3" max="60"></label>
+      <label>Rain Accumulation<input id="durRainAccumulation" type="number" min="3" max="60"></label>
       <label>Storm Potential<input id="durStormOutlook" type="number" min="3" max="60"></label>
       <label>SPC Outlook<input id="durSpcOutlook" type="number" min="3" max="60"></label>
       <label>Condition Focus<input id="durConditionFocus" type="number" min="3" max="60"></label>
@@ -405,6 +419,10 @@
         <label>Storm slide threshold (%)<input id="smartStorm" type="number" min="0" max="100"></label>
         <label>Heat focus threshold (°F)<input id="smartHeat" type="number" min="70" max="130"></label>
         <label>Cold focus threshold (°F)<input id="smartCold" type="number" min="-40" max="60"></label>
+        <label>Wind story threshold (mph gust)<input id="smartWind" type="number" min="5" max="100"></label>
+        <label>Humid dew point threshold (°F)<input id="smartHumidDew" type="number" min="45" max="80"></label>
+        <label>Dry dew point threshold (°F)<input id="smartDryDew" type="number" min="0" max="55"></label>
+        <label class="checkbox"><input id="smartStoryOrdering" type="checkbox"> Prioritize the most important weather story</label>
         <label class="checkbox"><input id="daypartsEnabled" type="checkbox"> Enable daypart programming</label>
         <label>Morning starts<input id="morningStart" type="number" min="0" max="23"></label>
         <label>Daytime starts<input id="daytimeStart" type="number" min="0" max="23"></label>
@@ -420,6 +438,12 @@
     <article class="card">
       <div class="card-head"><div><h2>Forecast Intelligence</h2><p>SPC outlooks use the official NOAA/NWS outlook map service. Local history is stored in SQLite under /config.</p></div><span class="pill">DATA</span></div>
       <div class="form-grid">
+        <label class="checkbox"><input id="forecastGraphicsEnabled" type="checkbox"> Enable Forecast Graphics 2.0</label>
+        <label>Day-ahead horizon (hours)<input id="forecastDayAheadHours" type="number" min="12" max="24" step="1"></label>
+        <label class="checkbox"><input id="windOutlookEnabled" type="checkbox"> Wind direction / gust outlook</label>
+        <label class="checkbox"><input id="humidityOutlookEnabled" type="checkbox"> Humidity / dew point outlook</label>
+        <label class="checkbox"><input id="rainAccumulationEnabled" type="checkbox"> Rain accumulation outlook</label>
+        <label class="checkbox"><input id="nwsSummaryEnabled" type="checkbox"> Broadcast-style NWS forecast brief</label>
         <label class="checkbox"><input id="spcEnabled" type="checkbox"> Enable SPC Day 1–3 outlook</label>
         <label>SPC refresh (seconds)<input id="spcRefresh" type="number" min="300" max="3600" step="60"></label>
         <label>Smart-programming minimum SPC risk<select id="spcMinimum"><option value="TSTM">General Thunder</option><option value="MRGL">Marginal</option><option value="SLGT">Slight</option><option value="ENH">Enhanced</option><option value="MDT">Moderate</option><option value="HIGH">High</option></select></label>
@@ -523,7 +547,7 @@ async function loadSettings() {
   cityRadiusMiles.value = settings.maps?.city_radius_miles || 180;
   regionalMapEnabled.checked = settings.maps?.regional_map_enabled !== false;
   regionalMapView.value = settings.maps?.regional_map_view || 'regional';
-  const map2=settings.maps?.engine2||{}; map2Enabled.checked=map2.enabled!==false;map2Refresh.value=map2.refresh_seconds||300;
+  const map2=settings.maps?.engine3||settings.maps?.engine2||{}; map2Enabled.checked=map2.enabled!==false;map2Refresh.value=map2.refresh_seconds||300;
   document.querySelectorAll('.map2-layer').forEach(x=>x.checked=(map2.layers||{})[x.value]!==false);
   stormGuidanceEnabled.checked = settings.storm_guidance?.enabled !== false;
   stormGuidanceRefresh.value = settings.storm_guidance?.refresh_seconds || 900;
@@ -558,6 +582,18 @@ async function loadSettings() {
   transitionSeconds.value = settings.presentation?.transition_seconds ?? 0.75;
   showStationId.checked = settings.presentation?.show_station_id !== false;
   backgroundMotion.checked = settings.presentation?.background_motion !== false;
+  const visual = settings.presentation?.visual_system || {};
+  visualSystemEnabled.checked = visual.enabled !== false;
+  footerMode.value = visual.footer_mode || 'data_ribbon';
+  sourceBadges.checked = visual.show_source_badges !== false;
+  freshnessBadges.checked = visual.show_freshness !== false;
+  conditionBackgrounds.checked = visual.condition_backgrounds !== false;
+  const iconSystem = settings.icon_system || {};
+  iconSystemEnabled.checked = iconSystem.enabled !== false;
+  iconAnimations.checked = iconSystem.animation_enabled !== false;
+  iconAnimationSpeed.value = iconSystem.animation_speed ?? 1.7;
+  metricIcons.checked = iconSystem.metric_icons !== false;
+  alertIcons.checked = iconSystem.alert_icons !== false;
   const retro = settings.presentation?.retro_effects || {};
   retroEnabled.checked = !!retro.enabled;
   retroScanlines.value = retro.scanlines ?? 0.14;
@@ -586,9 +622,13 @@ async function loadSettings() {
   durCurrent.value = settings.slides?.current || 12;
   durToday.value = settings.slides?.today || 12;
   durNwsForecast.value = settings.slides?.nws_forecast || 16;
+  durDayAhead.value = settings.slides?.day_ahead || 16;
   durTemperatureTrend.value = settings.slides?.temperature_trend || 14;
   durHourly.value = settings.slides?.hourly || 15;
+  durHumidityOutlook.value = settings.slides?.humidity_outlook || 14;
+  durWindOutlook.value = settings.slides?.wind_outlook || 14;
   durPrecipitation.value = settings.slides?.precipitation || 12;
+  durRainAccumulation.value = settings.slides?.rain_accumulation || 14;
   durStormOutlook.value = settings.slides?.storm_outlook || 14;
   durSpcOutlook.value = settings.slides?.spc_outlook || 13;
   durConditionFocus.value = settings.slides?.condition_focus || 10;
@@ -615,6 +655,17 @@ async function loadSettings() {
   smartStorm.value = settings.smart_programming?.storm_threshold ?? 15;
   smartHeat.value = settings.smart_programming?.heat_threshold ?? 95;
   smartCold.value = settings.smart_programming?.cold_threshold ?? 32;
+  smartWind.value = settings.smart_programming?.wind_threshold ?? 25;
+  smartHumidDew.value = settings.smart_programming?.humid_dewpoint_threshold ?? 65;
+  smartDryDew.value = settings.smart_programming?.dry_dewpoint_threshold ?? 35;
+  smartStoryOrdering.checked = settings.smart_programming?.smart_story_ordering !== false;
+  const fg = settings.forecast_graphics || {};
+  forecastGraphicsEnabled.checked = fg.enabled !== false;
+  forecastDayAheadHours.value = fg.day_ahead_hours ?? 24;
+  windOutlookEnabled.checked = fg.wind_outlook_enabled !== false;
+  humidityOutlookEnabled.checked = fg.humidity_outlook_enabled !== false;
+  rainAccumulationEnabled.checked = fg.rain_accumulation_enabled !== false;
+  nwsSummaryEnabled.checked = fg.nws_summary_enabled !== false;
   daypartsEnabled.checked = settings.dayparts?.enabled !== false;
   morningStart.value = settings.dayparts?.morning_start ?? 5; daytimeStart.value = settings.dayparts?.daytime_start ?? 10; eveningStart.value = settings.dayparts?.evening_start ?? 17; overnightStart.value = settings.dayparts?.overnight_start ?? 22;
   const dseq = settings.dayparts?.sequences || {};
@@ -744,7 +795,7 @@ async function saveGeneral() {
       city_radius_miles: Number(cityRadiusMiles.value || 180),
       regional_map_enabled: regionalMapEnabled.checked,
       regional_map_view: regionalMapView.value,
-      engine2:{enabled:map2Enabled.checked,refresh_seconds:Number(map2Refresh.value||300),layers:Object.fromEntries([...document.querySelectorAll('.map2-layer')].map(x=>[x.value,x.checked]))}
+      engine3:{enabled:map2Enabled.checked,refresh_seconds:Number(map2Refresh.value||300),layers:Object.fromEntries([...document.querySelectorAll('.map2-layer')].map(x=>[x.value,x.checked]))}
     },
     regions:{enabled:regionsEnabled.checked,items:settings.regions?.items||[]},
     branding_profiles:settings.branding_profiles||{},
@@ -752,7 +803,9 @@ async function saveGeneral() {
     storm_guidance: {enabled: stormGuidanceEnabled.checked, refresh_seconds: Number(stormGuidanceRefresh.value || 900)},
     spc: {enabled: spcEnabled.checked, refresh_seconds: Number(spcRefresh.value || 900), minimum_smart_risk: spcMinimum.value},
     history: {enabled: historyEnabled.checked, retention_days: Number(historyRetention.value || 90)},
-    smart_programming: {enabled: smartEnabled.checked, rain_threshold: Number(smartRain.value || 20), storm_threshold: Number(smartStorm.value || 15), heat_threshold: Number(smartHeat.value || 95), cold_threshold: Number(smartCold.value || 32)},
+    smart_programming: {enabled: smartEnabled.checked, rain_threshold: Number(smartRain.value || 20), storm_threshold: Number(smartStorm.value || 15), heat_threshold: Number(smartHeat.value || 95), cold_threshold: Number(smartCold.value || 32), wind_threshold: Number(smartWind.value || 25), humid_dewpoint_threshold: Number(smartHumidDew.value || 65), dry_dewpoint_threshold: Number(smartDryDew.value || 35), smart_story_ordering: smartStoryOrdering.checked},
+    forecast_graphics: {enabled: forecastGraphicsEnabled.checked, day_ahead_hours: Number(forecastDayAheadHours.value || 24), wind_outlook_enabled: windOutlookEnabled.checked, humidity_outlook_enabled: humidityOutlookEnabled.checked, rain_accumulation_enabled: rainAccumulationEnabled.checked, nws_summary_enabled: nwsSummaryEnabled.checked},
+    icon_system: {enabled: iconSystemEnabled.checked, style: 'rwn_classic', animation_enabled: iconAnimations.checked, animation_speed: Number(iconAnimationSpeed.value || 1.7), metric_icons: metricIcons.checked, alert_icons: alertIcons.checked, hero_icons: true},
     dayparts: {enabled: daypartsEnabled.checked, morning_start: Number(morningStart.value || 5), daytime_start: Number(daytimeStart.value || 10), evening_start: Number(eveningStart.value || 17), overnight_start: Number(overnightStart.value || 22), sequences: {morning: seqMorning.value.split(',').map(x=>x.trim()).filter(Boolean), daytime: seqDaytime.value.split(',').map(x=>x.trim()).filter(Boolean), evening: seqEvening.value.split(',').map(x=>x.trim()).filter(Boolean), overnight: seqOvernight.value.split(',').map(x=>x.trim()).filter(Boolean)}},
     cache: {retention_hours: Number(cacheRetention.value || 48), auto_cleanup: true},
     channels: {
@@ -830,6 +883,15 @@ async function saveGeneral() {
       show_station_id: showStationId.checked,
       station_id_seconds: Number(durStation.value || 6),
       background_motion: backgroundMotion.checked,
+      visual_system: {
+        enabled: visualSystemEnabled.checked,
+        design_width: 1280,
+        design_height: 720,
+        footer_mode: footerMode.value,
+        show_source_badges: sourceBadges.checked,
+        show_freshness: freshnessBadges.checked,
+        condition_backgrounds: conditionBackgrounds.checked
+      },
       retro_effects: {
         enabled: retroEnabled.checked,
         scanlines: Number(retroScanlines.value || 0),
@@ -852,9 +914,13 @@ async function saveGeneral() {
       current: Number(durCurrent.value || 12),
       today: Number(durToday.value || 12),
       nws_forecast: Number(durNwsForecast.value || 16),
+      day_ahead: Number(durDayAhead.value || 16),
       temperature_trend: Number(durTemperatureTrend.value || 14),
       hourly: Number(durHourly.value || 15),
+      humidity_outlook: Number(durHumidityOutlook.value || 14),
+      wind_outlook: Number(durWindOutlook.value || 14),
       precipitation: Number(durPrecipitation.value || 12),
+      rain_accumulation: Number(durRainAccumulation.value || 14),
       storm_outlook: Number(durStormOutlook.value || 14),
       spc_outlook: Number(durSpcOutlook.value || 13),
       condition_focus: Number(durConditionFocus.value || 10),

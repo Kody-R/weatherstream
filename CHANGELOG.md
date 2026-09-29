@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.3.4
+
+### Added
+
+- RWN Icon & Motion System with 207 bundled transparent PNG assets
+- Hero, standard, and compact weather-condition artwork with day/night variants
+- Four-frame motion sequences for selected cloud, precipitation, storm, snow, wind, lightning, and tropical states
+- Central `app.iconography` weather-code resolver and cached asset loader
+- RWN metric symbols for temperature, humidity, dew point, wind, gusts, pressure, cloud cover, rain, UV, visibility, sunrise, and sunset
+- Dedicated alert icon family for tornado, severe thunderstorm, flash flood, winter storm, extreme heat, wildfire/smoke, and tropical hazards
+- Admin controls for icon enablement, animation, motion speed, metric icons, and alert icons
+- Reproducible icon generator under `tools/generate_rwn_icons.py`
+- Schema 22 migration and v0.3.4 regression coverage
+
+### Changed
+
+- Current Conditions, Today, Hourly, 7-Day, and other weather-code screens now resolve condition artwork through the RWN icon system
+- Current Conditions and Condition Focus metric cards use RWN symbols
+- Severe Alert presentation automatically selects an event-specific RWN alert identity
+- Legacy procedural weather icons remain available as a compatibility fallback
+
+### Validation
+
+- 51 automated tests plus 13 render subtests pass
+- Core icon-enabled boards validated at 1280×720 and 1920×1080
+
+## 0.3.3
+
+### Added
+
+- Map Engine 3.0 with cached official NOAA geographic overlays
+- SPC Day 1 categorical geographic outlook slide
+- SPC Day 1 tornado, hail, and damaging-wind probability triptych
+- WPC Day 1 National Forecast Chart slide with fronts, highs/lows, precipitation, and significant-weather features
+- WPC Day 1 24-hour quantitative precipitation forecast slide
+- Severe Weather Hazard Map combining regional radar, warning polygons, warning legend, and local SPC context
+- Map Engine 3.0 Admin layer controls and Studio slide support
+- Schema 21 migration and v0.3.3 regression coverage
+
+### Changed
+
+- NWS warning polygons now use translucent fills, stronger colored outlines, and compact event labels on radar
+- Radar, severe-weather, tornado, flood, and winter rundowns include relevant Map Engine 3.0 products
+- NOAA map overlays refresh and cache outside the frame-render hot path with last-known-good fallback
+- GOES imagery configuration now follows Map Engine 3.0 settings with Map Engine 2.0 fallback for upgraded installations
+
+### Validation
+
+- 46 automated tests plus 13 render subtests pass
+- New Map Engine graphics validated at 1280×720 and 1920×1080
+
+## 0.3.2
+
+### Added
+
+- Next 24 Hours forecast board with temperature, feels-like, rain chance, peak gust, and 24-hour summary metrics
+- Humidity & Dew Point 12-hour trend graphic with local comfort classification
+- Wind Outlook with sustained/gust trend lines and directional arrows
+- Rainfall Accumulation graph with 6-, 12-, and 24-hour forecast totals
+- Broadcast-style NWS Forecast Brief derived from official NWS forecast periods
+- Forecast Graphics 2.0 Admin controls and Studio slide support
+- Smart Story Ordering with wind, dew-point, rain accumulation, storm, and SPC-aware sequencing
+- Schema 20 migration and v0.3.2 regression coverage
+
+### Changed
+
+- Open-Meteo hourly ingestion now retains wind direction and cloud cover
+- NWS forecast ingestion retains precipitation probability, humidity, and dew-point fields when provided
+- Local/daypart default sequences include the new forecast graphics, with quiet-weather products filtered by Smart Programming thresholds
+
+## 0.3.1
+
+### Added
+
+- Visual System 2.0 logical 1280×720 design canvas with single-pass scaling to configured output resolution
+- Reusable metric/source/freshness presentation helpers for broadcast graphics
+- Redesigned Current Conditions, Hourly Forecast, Rain Timing, 7-Day Outlook, and Severe Alert screens
+- RWN data-ribbon lower third with classic crawl compatibility mode
+- Subtle condition-responsive weather backgrounds
+- Admin toggles for Visual System 2.0, footer mode, source badges, freshness, and condition backgrounds
+
+### Changed
+
+- Radar lower information strip now shows loop timing and latest image time instead of encoder/operator presentation values
+- Core forecast screens emphasize trends, timing, and weather context rather than repeated card layouts
+- Settings schema advanced to 19 while preserving existing v0.3.0 configuration
+
 ## 0.3.0
 
 ### Added

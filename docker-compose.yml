@@ -2,7 +2,7 @@ services:
   weatherstream:
     build: .
     # After publishing to GHCR, replace "build: ." with, for example:
-    image: ghcr.io/kody-r/weatherstream:v0.3.0
+    image: ghcr.io/kody-r/weatherstream:v0.3.4
     container_name: weatherstream
     init: true
     restart: unless-stopped
@@ -28,7 +28,7 @@ services:
     # Optional Intel/AMD VAAPI or Intel QSV acceleration. Uncomment only when
     # /dev/dri exists on the Docker host, then select Auto/VAAPI/QSV in Admin.
     # devices:
-     /dev/dri:/dev/dri
+    #   - /dev/dri:/dev/dri
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health/live"]
       interval: 30s

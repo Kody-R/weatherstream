@@ -16,6 +16,17 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 RAINVIEWER_META = "https://api.rainviewer.com/public/weather-maps.json"
 OSM_TILE = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TIGER_EXPORT = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer/export"
+SPC_EXPORT = "https://mapservices.weather.noaa.gov/vector/rest/services/outlooks/SPC_wx_outlks/MapServer/export"
+WPC_FORECAST_EXPORT = "https://mapservices.weather.noaa.gov/vector/rest/services/outlooks/natl_fcst_wx_chart/MapServer/export"
+WPC_QPF_EXPORT = "https://mapservices.weather.noaa.gov/vector/rest/services/precip/wpc_qpf/MapServer/export"
+OFFICIAL_PRODUCTS = {
+    "spc_day1": {"url": SPC_EXPORT, "layers": "1", "source": "NOAA/NWS Storm Prediction Center"},
+    "spc_tornado": {"url": SPC_EXPORT, "layers": "3", "source": "NOAA/NWS Storm Prediction Center"},
+    "spc_hail": {"url": SPC_EXPORT, "layers": "5", "source": "NOAA/NWS Storm Prediction Center"},
+    "spc_wind": {"url": SPC_EXPORT, "layers": "7", "source": "NOAA/NWS Storm Prediction Center"},
+    "wpc_surface": {"url": WPC_FORECAST_EXPORT, "layers": "1,2,3,4,5,6,7,8,9,10,11", "source": "NOAA/NWS Weather Prediction Center"},
+    "wpc_qpf_day1": {"url": WPC_QPF_EXPORT, "layers": "1", "source": "NOAA/NWS Weather Prediction Center"},
+}
 CACHE_ROOT = Path(os.environ.get("WEATHERSTREAM_RADAR_CACHE", "/config/cache/radar"))
 WEB_MERCATOR_ORIGIN = 20037508.342789244
 VIEW_NAMES = ("local", "regional", "wide")
@@ -68,12 +79,13 @@ class RadarManager:
         self._basemaps: dict[str, Image.Image | None] = {name: None for name in VIEW_NAMES}
         self._location_frames: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._location_basemaps: dict[str, dict[str, Image.Image | None]] = {}
+        self._official_products: dict[str, dict[str, dict[str, Any]]] = {}
         self._last_update: float | None = None
         self._last_error: str | None = None
         self._view_errors: dict[str, str | None] = {name: None for name in VIEW_NAMES}
         self._resized_frame_cache: dict[tuple[str, int, int, int], Image.Image] = {}
         self._resized_map_cache: dict[tuple[str, int, int, int], Image.Image] = {}
-        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.3.0"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
+        self._client = httpx.Client(timeout=httpx.Timeout(18.0, connect=8.0), follow_redirects=True, headers={"User-Agent": "WeatherStream/0.3.4"}, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8))
         CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
@@ -108,6 +120,106 @@ class RadarManager:
         with self._lock:
             image = (self._location_basemaps.get(str(location_id)) or {}).get(view) if location_id else self._basemaps.get(view)
             return image.copy() if image is not None and copy_image else image
+
+
+    def official_product(self, product: str, location_id: str | None = None, copy_image: bool = True) -> dict[str, Any]:
+        """Return a cached NOAA MapServer overlay used by Map Engine 3.0."""
+        if product not in OFFICIAL_PRODUCTS:
+            return {"product": product, "image": None, "last_update": None, "last_error": "Unknown map product", "source": ""}
+        with self._lock:
+            lid = str(location_id or self.config_store.get().get("primary_location_id") or "")
+            row = copy.copy((self._official_products.get(lid) or {}).get(product) or {})
+            image = row.get("image")
+            if image is not None and copy_image:
+                row["image"] = image.copy()
+        row.setdefault("product", product)
+        row.setdefault("source", OFFICIAL_PRODUCTS[product]["source"])
+        row.setdefault("last_update", None)
+        row.setdefault("last_error", None)
+        row.setdefault("view", "wide")
+        row.setdefault("image", None)
+        return row
+
+    def _official_engine(self, settings: dict[str, Any]) -> dict[str, Any]:
+        maps = settings.get("maps") or {}
+        return maps.get("engine3") or maps.get("engine2") or {}
+
+    def _build_official_overlay(self, client: httpx.Client, url: str, layers: str, loc: dict[str, Any], zoom: int, width: int, height: int) -> Image.Image:
+        left, top, *_ = self._viewport(float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
+        right, bottom = left + width, top + height
+        xmin, ymax = _pixel_to_mercator(left, top, zoom)
+        xmax, ymin = _pixel_to_mercator(right, bottom, zoom)
+        params = {
+            "bbox": f"{xmin},{ymin},{xmax},{ymax}",
+            "bboxSR": "3857", "imageSR": "3857",
+            "size": f"{width},{height}", "format": "png32",
+            "transparent": "true", "layers": f"show:{layers}",
+            "dpi": "96", "f": "image",
+        }
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        return Image.open(io.BytesIO(response.content)).convert("RGBA")
+
+    def _refresh_official_products(self, settings: dict[str, Any], loc: dict[str, Any]) -> None:
+        engine = self._official_engine(settings)
+        if not engine.get("enabled", True):
+            return
+        layers_cfg = engine.get("layers") or {}
+        enabled = {
+            "spc_day1": layers_cfg.get("spc_outlook", True),
+            "spc_tornado": layers_cfg.get("spc_probabilities", True),
+            "spc_hail": layers_cfg.get("spc_probabilities", True),
+            "spc_wind": layers_cfg.get("spc_probabilities", True),
+            "wpc_surface": layers_cfg.get("surface_chart", True),
+            "wpc_qpf_day1": layers_cfg.get("qpf", True),
+        }
+        radar = settings.get("radar") or {}
+        views = radar.get("views") or {}
+        width, height = 1180, 500
+        lid = str(loc.get("id") or settings.get("primary_location_id") or "")
+        if not lid:
+            return
+        # Prefer a configured wide view only when its basemap is actually available.
+        # This keeps official products useful when radar animation is disabled and the
+        # lightweight basemap-only refresh has built only the regional canvas.
+        with self._lock:
+            location_maps = self._location_basemaps.get(lid) or {}
+            wide_ready = location_maps.get("wide") is not None
+            regional_ready = location_maps.get("regional") is not None
+            current = copy.copy(self._official_products.get(lid) or {})
+        wide_enabled = (views.get("wide") or {}).get("enabled", True)
+        view = "wide" if wide_enabled and wide_ready else "regional"
+        if not regional_ready and wide_ready:
+            view = "wide"
+        default_zoom = 5 if view == "wide" else 6
+        zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
+        result = dict(current)
+        for product, spec in OFFICIAL_PRODUCTS.items():
+            if not enabled.get(product, False):
+                continue
+            cache = CACHE_ROOT / "official" / lid / f"{product}-{view}-z{zoom}.png"
+            try:
+                overlay = self._build_official_overlay(self._client, spec["url"], spec["layers"], loc, zoom, width, height)
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                tmp = cache.with_suffix(".tmp.png")
+                overlay.save(tmp, "PNG"); tmp.replace(cache)
+                result[product] = {
+                    "product": product, "image": overlay, "last_update": time.time(),
+                    "last_error": None, "source": spec["source"], "view": view, "zoom": zoom,
+                }
+            except Exception as exc:
+                cached = None
+                if cache.exists():
+                    try: cached = Image.open(cache).convert("RGBA")
+                    except Exception: cached = None
+                old = result.get(product) or {}
+                result[product] = {
+                    "product": product, "image": cached or old.get("image"),
+                    "last_update": old.get("last_update"), "last_error": str(exc),
+                    "source": spec["source"], "view": view, "zoom": zoom,
+                }
+        with self._lock:
+            self._official_products[lid] = result
 
     def resized_frame(self, view: str, frame: dict[str, Any], width: int, height: int) -> Image.Image:
         """Return a read-only target-size radar frame shared by active channels."""
@@ -150,6 +262,10 @@ class RadarManager:
                 "last_error": self._last_error,
                 "view_errors": dict(self._view_errors),
                 "maps_ready": {name: self._basemaps.get(name) is not None for name in VIEW_NAMES},
+                "official_products": {
+                    lid: {name: {"ready": row.get("image") is not None, "last_update": row.get("last_update"), "last_error": row.get("last_error")} for name, row in products.items()}
+                    for lid, products in self._official_products.items()
+                },
             }
 
     def _run(self) -> None:
@@ -195,7 +311,10 @@ class RadarManager:
                         default_zoom = {"local": 7, "regional": 6, "wide": 5}[view]
                         zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
                         self._load_cached_basemap(loc, view, zoom)
-            refresh = max(120, int(radar.get("refresh_seconds", 300)))
+            radar_refresh = max(120, int(radar.get("refresh_seconds", 300)))
+            engine = self._official_engine(settings)
+            map_refresh = max(120, int(engine.get("refresh_seconds", 300))) if engine.get("enabled", True) else radar_refresh
+            refresh = min(radar_refresh, map_refresh)
             self._wake.wait(refresh)
             self._wake.clear()
 
@@ -211,13 +330,13 @@ class RadarManager:
         default_zoom = {"local": 7, "regional": 6, "wide": 5}[view]
         zoom = max(3, min(7, int((views.get(view) or {}).get("zoom", default_zoom))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.0 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.4 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
         client = self._client
         client.headers.update(headers)
         with nullcontext(client) as client:
             base = self._build_basemap(client, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
-            if radar.get("show_boundaries", True) and ((((maps.get("engine2") or {}).get("layers") or {}).get("boundaries",True))):
+            if radar.get("show_boundaries", True) and ((((maps.get("engine3") or maps.get("engine2") or {}).get("layers") or {}).get("boundaries",True))):
                 boundaries = self._build_boundary_overlay(
                     client, loc, view, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height
                 )
@@ -229,6 +348,7 @@ class RadarManager:
                 if lid==str(settings.get("_radar_default_primary") or settings.get("primary_location_id")): self._basemaps[view] = map_rgb
                 self._last_update = time.time()
             self._save_basemap(loc, view, zoom, map_rgb)
+            self._refresh_official_products(settings, loc)
 
     def _primary(self, settings: dict[str, Any]) -> dict[str, Any] | None:
         pid = settings.get("primary_location_id")
@@ -242,7 +362,7 @@ class RadarManager:
         radar = settings.get("radar", {})
         frame_count = max(3, min(12, int(radar.get("frame_count", 8))))
         width, height = 1180, 500
-        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.0 (Roller Weather Network local weather display)"
+        ua = settings.get("nws_user_agent") or "WeatherStream/0.3.4 (Roller Weather Network local weather display)"
         headers = {"User-Agent": ua}
 
         client = self._client
@@ -258,6 +378,7 @@ class RadarManager:
 
             enabled_views = self._enabled_views(settings)
             if not enabled_views:
+                self._refresh_official_products(settings, loc)
                 return
 
             built_any = False
@@ -266,7 +387,7 @@ class RadarManager:
                 try:
                     base = self._build_basemap(client, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height)
                     boundaries = None
-                    if radar.get("show_boundaries", True) and (((((settings.get("maps") or {}).get("engine2") or {}).get("layers") or {}).get("boundaries",True))):
+                    if radar.get("show_boundaries", True) and (((((settings.get("maps") or {}).get("engine3") or (settings.get("maps") or {}).get("engine2") or {}).get("layers") or {}).get("boundaries",True))):
                         boundaries = self._build_boundary_overlay(
                             client, loc, view, float(loc["latitude"]), float(loc["longitude"]), zoom, width, height
                         )
@@ -304,6 +425,11 @@ class RadarManager:
                 except Exception as exc:
                     errors[view] = str(exc)
                     self._load_cached_view(settings, view)
+
+            try:
+                self._refresh_official_products(settings, loc)
+            except Exception:
+                pass
 
             with self._lock:
                 self._view_errors = errors

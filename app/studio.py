@@ -5,9 +5,9 @@ from typing import Any
 
 
 AVAILABLE_SLIDES = [
-    "station_id", "current", "condition_focus", "today", "nws_forecast", "temperature_trend", "hourly",
-    "precipitation", "storm_outlook", "spc_outlook", "radar_local", "radar_regional", "radar_wide",
-    "map_engine", "map_satellite", "map_lightning", "seven_day", "regional_map", "weather_history", "almanac",
+    "station_id", "current", "condition_focus", "today", "nws_forecast", "day_ahead", "temperature_trend", "hourly",
+    "humidity_outlook", "wind_outlook", "precipitation", "rain_accumulation", "storm_outlook", "spc_outlook", "radar_local", "radar_regional", "radar_wide",
+    "map_engine", "spc_map", "spc_hazards", "surface_map", "qpf_map", "hazard_map", "map_satellite", "map_lightning", "seven_day", "regional_map", "weather_history", "almanac",
     "alert", "alert_radar", "event_summary", "tropical_update", "tropical_systems", "tropical_track", "tropical_local",
 ]
 

@@ -1,8 +1,94 @@
-# WeatherStream v0.3.0 — RWN Network Studio
+# WeatherStream v0.3.4 — RWN Icon & Motion System
 
-WeatherStream is a self-hosted Docker broadcast engine that turns official weather data, radar, forecasts, alerts, satellite imagery, station branding, and background audio into continuously discoverable HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.0 expands one Roller Weather Network installation into a multi-region weather network with automatic event channels, Map Engine 2.0, WeatherStream Studio, per-source refresh controls, and reusable channel branding profiles.**
+WeatherStream is a self-hosted Docker broadcast engine that turns weather forecasts, official NWS/NOAA products, radar, alerts, imagery, branding, and background audio into HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.4 gives Roller Weather Network a complete custom weather-icon, metric-symbol, alert-identity, and subtle motion system.**
 
-## What's new in v0.3.0
+## What's new in v0.3.4
+
+- **Custom RWN weather icons:** 28 weather/condition identities with separate hero, standard, and compact artwork.
+- **Day/night variants:** clear, mostly clear, and partly cloudy automatically use the correct celestial artwork.
+- **RWN Motion System:** selected hero/standard conditions use subtle four-frame animation for clouds, rain, snow, lightning, wind, and tropical systems.
+- **RWN metric symbols:** temperature, humidity, dew point, wind, gusts, pressure, cloud cover, rain, UV, visibility, sunrise, and sunset.
+- **Alert identity:** dedicated tornado, severe thunderstorm, flash flood, winter storm, extreme heat, wildfire/smoke, and tropical artwork.
+- **Central icon resolver:** screens request a condition and size instead of referencing individual asset filenames.
+- **Legacy fallback:** disabling the icon system—or a missing asset—falls back to WeatherStream's previous procedural symbols.
+- **Admin controls:** icon system, animation, motion speed, metric icons, and alert icons are configurable.
+- **207 bundled transparent PNG assets**, plus the reproducible `tools/generate_rwn_icons.py` generator.
+- Settings schema **22** upgrades v0.3.3 installations without changing existing channel/map/Studio sequencing.
+- **51 automated tests plus 13 render subtests** pass.
+
+See `V0.3.4_RELEASE_NOTES.md` for the complete release notes.
+
+## Previous release: v0.3.3
+
+### WeatherStream v0.3.3 — Map Engine 3.0
+
+WeatherStream is a self-hosted Docker broadcast engine that turns weather forecasts, official NWS/NOAA products, radar, alerts, imagery, branding, and background audio into HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.3 upgrades the mapping stack into Map Engine 3.0 with official geographic severe-weather, synoptic, and precipitation products.**
+
+#### What's new in v0.3.3
+
+- **SPC Day 1 Geographic Outlook:** official categorical risk polygons are placed over the WeatherStream basemap, with the local Day 1 risk called out separately.
+- **SPC Hazard Probabilities:** three simultaneous maps for official Day 1 tornado, hail, and damaging-wind probability contours.
+- **WPC Day 1 Weather Map:** official fronts, highs/lows, rain, snow, and significant-weather areas from the National Forecast Chart service.
+- **WPC 24-Hour QPF:** official Day 1 quantitative precipitation forecast mapping.
+- **Severe Weather Hazard Map:** regional radar plus filled/translucent NWS warning polygons, polygon labels, an active-warning legend, and local SPC risk context.
+- **Warning Polygon 2.0:** warning geometry is easier to see over radar through translucent fills, stronger outlines, and event labels.
+- **Map Engine cache/fallback:** official NOAA overlays refresh outside the render loop and retain the last successful image when an upstream map service is unavailable.
+- **Map Engine 3.0 Admin controls:** individually enable SPC categorical/probabilistic products, WPC surface charts, WPC QPF, radar, warnings, GOES imagery, tropical tracks, labels, and boundaries.
+- **Radar / Severe / Event rundowns:** new map products are inserted into the appropriate specialty channels; Flood channels gain QPF, Tornado channels gain hazard/SPC maps, and Winter channels gain the WPC weather map.
+- Settings schema **21** migrates Map Engine 2.0 configuration into Map Engine 3.0 while preserving custom channel order.
+- **46 automated tests plus 13 render subtests** cover migration, export geometry, new slide rendering, and the existing v0.3.x feature set.
+
+WeatherStream uses official NOAA/NWS ArcGIS services for the new products; network access is performed by the background map manager, never by the frame renderer.
+
+See `V0.3.3_RELEASE_NOTES.md` for the complete release notes.
+
+## Previous release: v0.3.2
+
+### WeatherStream v0.3.2 — Forecast Graphics 2.0
+
+WeatherStream is a self-hosted Docker broadcast engine that turns weather forecasts, official NWS products, radar, alerts, imagery, branding, and background audio into HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.2 builds on Visual System 2.0 with richer forecast graphics and smarter weather-story sequencing.**
+
+## What's new in v0.3.2
+
+- **Next 24 Hours:** six representative checkpoints with temperature, feels-like, weather icon, rain chance, daily range, peak rain, rainfall total, and peak gust.
+- **Humidity & Dew Point:** 12-hour humidity trend, calculated dew point, and comfort messaging.
+- **Wind Outlook:** sustained wind, gust trend, directional arrows, and peak-wind context.
+- **Rainfall Accumulation:** cumulative 24-hour graph with 6/12/24-hour rainfall totals.
+- **NWS Forecast Brief:** clearer broadcast presentation of the official NWS forecast periods instead of dense paragraph cards.
+- **Smart Story Ordering:** rain, wind, humidity, thunderstorm, and SPC signals can promote the relevant graphics earlier in the rundown.
+- **Forecast Graphics controls:** Admin toggles, thresholds, day-ahead horizon, and individual slide durations.
+- **Studio support:** all new graphics are available in rundown editing and previews.
+- **Hourly data enrichment:** wind direction and cloud cover are retained alongside the existing forecast fields.
+- Settings schema **20** migrates v0.3.1 configurations while preserving custom ordering and inserting the new graphics next to related forecast products.
+- **42 automated tests** plus 720p/1080p render validation cover the release.
+
+See `V0.3.2_RELEASE_NOTES.md` for the complete release notes.
+
+## Previous release: v0.3.1
+
+### WeatherStream v0.3.1 — Visual System 2.0
+
+WeatherStream is a self-hosted Docker broadcast engine that turns official weather data, radar, forecasts, alerts, satellite imagery, station branding, and background audio into continuously discoverable HLS/IPTV channels for Jellyfin, VLC, and other players. **v0.3.1 keeps the v0.3.0 Network Studio architecture and introduces a resolution-independent broadcast visual system with redesigned core forecast graphics and viewer-facing data presentation.**
+
+## What's new in v0.3.1
+
+- **Visual System 2.0:** all channel graphics are authored on a stable 1280×720 logical broadcast canvas and scaled once to the configured output resolution, improving 1080p/1440p/4K consistency without rewriting every slide.
+- **Current Conditions 2.0:** hero condition layout, condition story callout, humidity/dew point, wind/gusts, pressure/cloud cover, and today's high/low/rain summary.
+- **Hourly Forecast 2.0:** temperature trend line plus weather icons, precipitation bars, and wind values across up to eight forecast hours.
+- **Rain Timing:** replaces the simple probability bar chart with a probability/amount timeline, peak timing, next-hours forecast total, and daily precipitation total.
+- **7-Day Outlook 2.0:** high/low trend lines, icons, rain bars, and wet-day emphasis instead of seven repeated forecast cards.
+- **Alert Presentation 2.0:** stronger severity hierarchy, affected-area panel, action-oriented instructions, expiry, and NWS attribution.
+- **Viewer-facing Radar:** the old operator-facing zoom/opacity/contrast strip is replaced with radar-loop age, frame count, and latest-image time.
+- **RWN Data Ribbon:** a stable lower third shows local conditions, today's high/low, next-12-hour rain chance, and wind; the classic scrolling crawl remains selectable.
+- **Source + freshness badges:** forecast screens can identify the data provider and display update age.
+- **Condition-responsive backgrounds:** subtle day/night, rain, snow, storm, and clear-weather treatments preserve theme identity while adding context.
+- **Admin controls:** Visual System 2.0, lower-third mode, source badges, freshness labels, and condition backgrounds can be enabled or disabled from Presentation settings.
+- Settings schema 19 migrates v0.3.0 installations without replacing custom sequences, themes, encoding options, or channel configuration.
+- 38 automated regression tests plus visual-render checks cover the v0.3.1 renderer, 1080p scaling, and existing network/studio behavior.
+
+## Previous release: v0.3.0
+
+### What was new in v0.3.0
 
 - **Automatic Weather Event Channels:** standing Tornado, Flood, Winter Weather, Wildfire, and Extreme Heat channels are published per region. Matching official NWS alerts wake only the relevant on-demand encoder; configurable cooldowns prevent start/stop thrashing.
 - **Broadcast Map Engine 2.0:** combines region-centered RainViewer radar, OSM/Census geography, NWS warning polygons, automatic city labels, tropical tracks, and cached official NOAA GOES-19 GeoColor and GLM lightning products. Each layer can be enabled independently.
